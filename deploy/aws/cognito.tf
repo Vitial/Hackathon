@@ -6,9 +6,15 @@
 # integration is env-gated and off unless VITAL_COGNITO_* is set.
 
 resource "aws_cognito_user_pool" "public" {
-  name                     = "${local.name}-public"
-  username_attributes      = ["email"]
-  auto_verified_attribute_names = ["email"]
+  name                = "${local.name}-public"
+  username_attributes = ["email"]
+  # Verified on sign-up without an email round-trip, because a verified
+  # attribute is what lets the pool hand back a session immediately: the
+  # console owns the account row and its password policy, and the funnel is
+  # meant to be one step. `auto_verified_attributes` is the pool argument's
+  # name — the SignUp API's `email_verified` attribute is admin-only and is
+  # deliberately not sent (see src/console/cognito.ts).
+  auto_verified_attributes = ["email"]
   mfa_configuration        = "OFF"
 
   # Mirrors MIN_PASSWORD_LENGTH in src/core/auth.ts (12) so the pool never
@@ -35,9 +41,13 @@ resource "aws_cognito_user_pool" "public" {
     prevent_destroy = true
   }
 
+  # Recovery by verified email only. The argument takes the provider's own
+  # vocabulary (`verified_email`), not the API's uppercase form, and the
+  # account must be able to recover without an operator: the funnel is public
+  # and there is no support desk behind it.
   account_recovery_setting {
     recovery_mechanism {
-      name     = "EMAIL_ONLY"
+      name     = "verified_email"
       priority = 1
     }
   }
@@ -54,7 +64,7 @@ resource "aws_cognito_user_pool_client" "funnel" {
   user_pool_id = aws_cognito_user_pool.public.id
 
   # Server-side caller: no secret to hide, password auth flow only.
-  generate_secret = false
+  generate_secret     = false
   explicit_auth_flows = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
 
   # LEGACY on purpose: with ENABLED, USER_PASSWORD_AUTH for a non-existent
@@ -74,5 +84,6 @@ resource "aws_cognito_user_pool_client" "funnel" {
     refresh_token = "days"
   }
 
-  tags = { Project = var.project }
+  # No tags here: `aws_cognito_user_pool_client` does not accept them (the pool
+  # above does). Cost allocation reads the pool's tags either way.
 }

@@ -290,7 +290,7 @@ export async function cognitoSignUp(
   const creds = opts.creds ?? (await resolveCognitoCredentials(opts.env));
   // email_verified is an admin-scope attribute: the SignUp API refuses it, so
   // confirmation comes from the pool's "sign-in without verifying email"
-  // setting (Terraform: auto_verified_attribute_names = ["email"]).
+  // setting (Terraform: auto_verified_attributes = ["email"]).
   const userAttributes = [{ Name: 'email', Value: input.email }];
   if (input.givenName) userAttributes.push({ Name: 'given_name', Value: input.givenName });
   if (input.familyName) userAttributes.push({ Name: 'family_name', Value: input.familyName });
