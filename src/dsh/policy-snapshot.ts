@@ -72,12 +72,10 @@ export async function buildPolicySnapshot(
     (await checkKill(db, tenant, scope, 'ACT_REVERSIBLE'));
   let approved: string | null = null;
   if (approvedDecisionId) {
-    const dec = (await db.prepare('SELECT * FROM decisions WHERE tenant = ? AND id = ?').get(
-      tenant,
-      approvedDecisionId,
-    )) as
-      | { id: string; approved_by: string | null; autonomy: string; scope: string }
-      | undefined;
+    const dec = (await db
+      .prepare('SELECT * FROM decisions WHERE tenant = ? AND id = ?')
+      .get(tenant, approvedDecisionId)) as
+      { id: string; approved_by: string | null; autonomy: string; scope: string } | undefined;
     if (dec && dec.approved_by && (dec.autonomy === 'approval' || dec.autonomy === 'human-command')) {
       if (!scope || dec.scope === scope) approved = dec.id;
     }

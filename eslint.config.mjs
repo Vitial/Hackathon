@@ -109,9 +109,10 @@ export default tseslint.config(
     },
   },
   {
-    // Plain-JS stdio fixtures (e.g. test/fake-dsh-runtime.mjs) run on node
+    // Plain-JS stdio fixtures and runtime plugins (e.g.
+    // test/fake-dsh-runtime.mjs, src/dsh/vital-approval.mjs) run on node
     // globals without a TS env: declare them instead of undef-erroring.
-    files: ['test/*.mjs'],
+    files: ['test/*.mjs', 'src/dsh/*.mjs'],
     languageOptions: {
       globals: globals.node,
     },

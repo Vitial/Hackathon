@@ -23,17 +23,48 @@
  */
 
 import { createRequire } from 'node:module';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DshClient } from '../src/dsh/client.ts';
+import { buildPolicyPatch, vitalApprovalPluginPath } from '../src/dsh/policy-plugin.ts';
+import { DSH_TOOL_CLASSES } from '../src/dsh/policy-snapshot.ts';
 
 const fail = (msg: string): never => {
   console.error(`[dsh-live] FAIL: ${msg}`);
   process.exit(1);
 };
-
 const require = createRequire(import.meta.url);
 const binPath = process.env.DSH_BIN ?? require.resolve('@deepseek-ai/dsh/lib/bin.js');
+const launchArgs = [binPath, '--profile', 'sdk'];
+
+// Optional mount proof for the in-runtime approval answerer (no model call):
+// generate a real snapshot + patch via the production builders, boot with
+// --patch, and assert the handshake still succeeds with the plugin mounted.
+// Decision behavior needs a live-model turn (phase 2 with creds).
+if (process.env.DSH_VERIFY_PLUGIN === '1') {
+  const dir = mkdtempSync(join(tmpdir(), 'vital-dsh-probe-'));
+  process.env.VITAL_POLICY_DIR = dir;
+  const sessionId = 'vital-live-probe';
+  writeFileSync(
+    join(dir, `vital-policy-${sessionId}.json`),
+    JSON.stringify({
+      version: 1,
+      sessionId,
+      scope: 'engineering',
+      tools: { ...DSH_TOOL_CLASSES },
+      killAtStart: false,
+      approvedDecisionId: null,
+    }),
+  );
+  const patchPath = join(dir, 'vital-approval.patch.yml');
+  writeFileSync(patchPath, buildPolicyPatch(vitalApprovalPluginPath()));
+  launchArgs.push('--patch', patchPath);
+  console.log('[dsh-live] plugin verification on: snapshot + patch generated via production builders');
+}
+
 const client = new DshClient({
-  launch: { command: process.execPath, args: [binPath, '--profile', 'sdk'] },
+  launch: { command: process.execPath, args: launchArgs },
 });
 
 // Phase 1: boot + handshake (no model call, no creds).

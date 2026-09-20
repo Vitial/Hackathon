@@ -225,6 +225,7 @@ export class DshRunner extends EventEmitter {
     }
 
     let clientOptsWithCwd: DshClientOptions = { ...clientOpts, cwd: clientOpts.cwd ?? task.workingDir };
+    const sessionId = `vital-${requestId}`;
     // In-runtime answerer (opt-in): freeze the deterministic policy core to
     // a snapshot file and mount the plugin via a generated --patch overlay.
     // The parent-side gate below stays authoritative regardless.
@@ -258,7 +259,6 @@ export class DshRunner extends EventEmitter {
     let transcriptTruncated = false;
     const MAX_TRANSCRIPT_CHARS = 64_000;
     const MAX_CLAIM_TOOL_CALLS = 200;
-    const sessionId = `vital-${requestId}`;
     let step = 0;
     const progress = (toolName?: string): void => {
       step += 1;
