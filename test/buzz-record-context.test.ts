@@ -3,10 +3,14 @@ import { installAuthSchema } from '../src/core/auth.ts';
 import {
   MAX_RECORD_REFS,
   loadBuzzContext,
+  recordRefsFromMessage,
   recordRefsFromThread,
+  renderAttachPicker,
   renderBuzzContextPanel,
+  renderRecordRefChips,
   type BuzzContextEntry,
   type BuzzMessageLike,
+  type BuzzRecordRef,
 } from '../src/console/buzz-context.ts';
 import { renderBuzzRoom, renderBuzzRoomContext, createLocalReply } from '../src/console/buzz.ts';
 import { renderWorkspaceShell } from '../src/console/workspace-shell.ts';
@@ -395,4 +399,141 @@ T('the context region is fetchable on its own, and a click costs no page', async
     null,
     'an unknown room has no region:',
   );
+});
+
+const readable: BuzzContextEntry = {
+  kind: 'claim',
+  id: 'cl_1',
+  title: 'Ledger copy is stale',
+  state: 'DISPUTED',
+  meta: [],
+  href: '/console/claims/cl_1?return=%2Fconsole%2Fbuzz%2Fgeneral',
+  unavailable: null,
+};
+const unreadable: BuzzContextEntry = {
+  kind: 'request',
+  id: 'rq_elsewhere',
+  title: '',
+  state: '',
+  meta: [],
+  href: '/console/requests/rq_elsewhere',
+  unavailable: 'not readable from this workspace',
+};
+
+T('the chip is derived from the message, never tracked beside it', () => {
+  const refs = recordRefsFromMessage({
+    id: 'msg_1',
+    content: 'see [the claim](/console/claims/cl_1) and again /console/claims/cl_1',
+    createdAt: 1,
+    isReviewCard: false,
+    requestId: null,
+  });
+  eq(refs.length, 1, 'one reference, however often it is written:');
+  eq(refs[0]!.kind, 'claim');
+
+  // A review card carries its request in a tag rather than in its text, and the
+  // chip has to see the same reference the panel does.
+  const card = recordRefsFromMessage({
+    id: 'msg_2',
+    content: 'review started',
+    createdAt: 2,
+    isReviewCard: true,
+    requestId: 'rq_9',
+  });
+  eq(
+    recordRefsFromMessage({ ...{ id: 'm', content: '', createdAt: 0, isReviewCard: false, requestId: null } }).length,
+    0,
+    'a message with no reference carries no chip:',
+  );
+  eq(card.length, 1, 'a review card references its request from its tag:');
+  eq(card[0]!.id, 'rq_9');
+  // A tag that is not an id (whitespace, a sentence) is dropped, not guessed at.
+  eq(
+    recordRefsFromMessage({
+      id: 'msg_3',
+      content: '',
+      createdAt: 3,
+      isReviewCard: true,
+      requestId: 'rq 9 not an id',
+    }).length,
+    0,
+    'a tag that is not an id is not read:',
+  );
+
+  const refsOut: BuzzRecordRef[] = [
+    { kind: 'claim', id: 'cl_1' },
+    { kind: 'request', id: 'rq_elsewhere' },
+  ];
+  const chips = renderRecordRefChips(refsOut, [readable, unreadable], { roomUrl: '/console/buzz/general' });
+  eq(chips.includes('data-buzz-refs'), true, 'the strip is marked:');
+  eq(chips.includes('buzz-ref-chip__kind">Claim'), true, 'a chip names the kind:');
+  eq(chips.includes('Ledger copy is stale'), true, 'and the record subject it was read with:');
+  eq(chips.includes('DISPUTED'), true, 'and its state:');
+  eq(chips.includes(readable.href), true, 'the chip is the href the panel read:');
+  eq(chips.includes('buzz-ref-chip--unavailable'), true, 'an unreadable record is marked as such:');
+  eq(chips.includes('not readable from this workspace'), true, 'and says why, in the tooltip:');
+  eq(chips.includes('rq_elsewhere'), true, 'but is never silently unlinked:');
+  eq(chips.includes('data-buzz-panel-open="claim:cl_1"'), true, 'a chip opens the panel in place:');
+  eq(renderRecordRefChips([], [readable], { roomUrl: '/console/buzz/general' }), '', 'no references, no strip:');
+
+  // Escaping: a subject is data, and a record's own words can contain markup.
+  const nasty: BuzzContextEntry = { ...readable, title: '<img src=x onerror=alert(1)>' };
+  const escaped = renderRecordRefChips([{ kind: 'claim', id: 'cl_1' }], [nasty], {
+    roomUrl: '/console/buzz/general',
+  });
+  eq(escaped.includes('<img src=x'), false, 'a subject cannot inject markup:');
+  eq(escaped.includes('&lt;img src=x'), true, 'it is escaped:');
+});
+
+T('the picker attaches what the room has already read, and nothing it has not', async () => {
+  const picker = renderAttachPicker([readable, unreadable], { roomUrl: '/console/buzz/general' });
+  eq(
+    picker.includes('hidden'),
+    true,
+    'hidden until the room script binds it — a control that does nothing is worse than none:',
+  );
+  eq(picker.includes(`data-buzz-attach="${readable.href}"`), true, 'a chip carries the record’s own href:');
+  eq(picker.includes('data-buzz-attach-label="Ledger copy is stale"'), true, 'and its subject as the link text:');
+  eq(picker.includes('DISPUTED'), true, 'with the state it was read in:');
+
+  const empty = renderAttachPicker([], { roomUrl: '/console/buzz/general' });
+  eq(empty.includes('data-buzz-attach='), false, 'a room that links to nothing gets no chips:');
+  eq(empty.includes('Paste a request, claim or issue link'), true, 'and is told how to attach one anyway:');
+
+  // End to end over a real room: the strip is on the message, the picker is in
+  // the composer, and neither costs a read of its own.
+  const ctx = await fresh();
+  await installAuthSchema(ctx.db, NOW);
+  await createLocalReply(
+    ctx.db,
+    TEN,
+    'general',
+    null,
+    'eng@acme.test',
+    'handoff: [the request](/console/requests/rq_attached)',
+  );
+  const view = await renderBuzzRoom(
+    ctx.db,
+    TEN,
+    'general',
+    '/',
+    'csrf_test',
+    null,
+    undefined,
+    'u1',
+    undefined,
+    'engineering',
+    null,
+  );
+  eq(view !== null, true, 'the room renders:');
+  if (!view) return;
+  eq(view.body.includes('data-buzz-refs'), true, 'the message carries a chip strip:');
+  eq(view.body.includes('data-buzz-panel-open="request:rq_attached"'), true, 'which opens the panel in place:');
+  eq(view.body.includes('href="/console/requests/rq_attached"'), true, 'and is a real link without the script:');
+  eq(view.body.includes('id="buzz-attach"'), true, 'the composer offers the picker:');
+  eq(view.body.includes(`data-buzz-attach="/console/requests/rq_attached`), true, 'reading the room’s own references:');
+  eq(view.body.includes("att.querySelectorAll('[data-buzz-attach]')"), true, 'and the room script wires it:');
+  // The chip chrome is Buzz's, like the rest of the surface.
+  eq(/--v-[a-z0-9-]+\s*:/.test(view.body), false, 'the room defines no Console token:');
+  eq(view.body.includes('var(--v-'), false, 'and uses none:');
 });

@@ -13,6 +13,7 @@ import {
   DEFAULT_TEAM,
 } from '../src/core/auth.ts';
 import {
+  issueRisk,
   listIssues,
   createIssue,
   moveIssue,
@@ -27,6 +28,8 @@ import {
   pushUpdateToGitHub,
 } from '../src/console/issues.ts';
 import { isSealed, secretsKeyFromEnv } from '../src/core/secrets.ts';
+import { RISK_ICON, riskBadge } from '../src/console/components.ts';
+import type { IssueRow } from '../src/console/issues.ts';
 import type { AsyncDb } from '../src/core/db.ts';
 
 /**
@@ -597,6 +600,160 @@ T('the unlink route is CSRF-checked, engineer-gated, and audited', async () => {
     ).json()) as { config: { repo: string; status: string } | null };
     eq(config.config?.status, 'unlinked');
     eq(config.config?.repo, '');
+  } finally {
+    await server.close();
+    await db.close();
+  }
+});
+
+T('a card is called late or stalled without becoming a state of its own', () => {
+  // The assessment is over the state, not another state: a DONE card that was
+  // due last month is a record of how the work went.
+  const row = (over: Partial<IssueRow>): IssueRow => ({
+    id: 'iss_x',
+    title: 'An issue',
+    description: '',
+    state: 'IN PROGRESS',
+    priority: 'No priority',
+    labels: [],
+    assigneeEmail: null,
+    createdBy: 'ada@acme.test',
+    progress: 0,
+    position: 0,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-09-20T00:00:00.000Z',
+    ...over,
+  });
+  const now = '2026-09-21T00:00:00.000Z';
+
+  eq(
+    issueRisk(row({ state: 'DONE', description: 'due: 2026-01-01' }), now),
+    [],
+    'finished is neither late nor stalled:',
+  );
+  eq(issueRisk(row({}), now), [], 'a card moved yesterday is fine:');
+
+  const late = issueRisk(row({ description: 'due: 2026-09-18' }), now);
+  eq(late.length, 1, 'one reading:');
+  eq(late[0]!.level, 'watch', 'late is needs-review, not blocked:');
+  eq(late[0]!.label, 'overdue 3d');
+  eq(late[0]!.reasons, ['Due 2026-09-18 — 3 day(s) ago'], 'with the date it is late against:');
+
+  const stalled = issueRisk(row({ updatedAt: '2026-09-01T00:00:00.000Z' }), now);
+  eq(stalled.length, 1);
+  eq(stalled[0]!.level, 'blocked', 'nobody advancing it is the stronger reading:');
+  eq(stalled[0]!.label, 'stalled');
+  eq(stalled[0]!.reasons, ['No update in 20 days']);
+
+  eq(issueRisk(row({ updatedAt: '2026-09-10T00:00:00.000Z' }), now), [], 'eleven days is not yet stalled:');
+  eq(
+    issueRisk(row({ description: 'due: 2026-09-18', updatedAt: '2026-09-01T00:00:00.000Z' }), now).length,
+    2,
+    'both, when both are true:',
+  );
+
+  // The trap this rule exists for: `Date.parse('Sep 30')` answers 2001 — a real
+  // number, and enough to make every card without a year "overdue".
+  eq(issueRisk(row({ description: 'due: Sep 30' }), now), [], 'a due date with no year claims nothing:');
+  eq(issueRisk(row({ description: 'due: 2026-09-18' }), 'not-a-date'), [], 'an unreadable now claims nothing:');
+});
+
+T('the board renders the assessment on the card, and the sync carries it', async () => {
+  // The board reads its own clock for this (like every other relative age it
+  // prints), so the expectations are taken from the page it just served rather
+  // than from a second clock the test keeps — that difference is the bug this
+  // assertion would otherwise hide.
+  const { db, ledger, coord, comp, owner } = await seeded();
+  const engineer = await activeMember(db, owner, 'eng@acme.test', 'member', 'engineering');
+  const stale = await createIssue(
+    db,
+    TEN,
+    { title: 'Late and stalled', description: 'due: 2026-01-01', state: 'TO DO' },
+    { userId: owner.id, email: owner.email },
+    '2026-01-02T00:00:00.000Z',
+  );
+  const fresh = await createIssue(
+    db,
+    TEN,
+    { title: 'Fine', state: 'IN PROGRESS' },
+    { userId: owner.id, email: owner.email },
+    new Date().toISOString(),
+  );
+  const server = await startConsoleServer(db, ledger, coord, comp, { tenant: TEN, now: () => NOW });
+  const base_ = `http://127.0.0.1:${server.port}`;
+  try {
+    const session = await engineerSession(server.port, engineer.email, 'a-long-enough-password')();
+    const page = await (await fetch(`${base_}/console/issues`, { headers: { cookie: session.cookie } })).text();
+
+    const serverTime = /data-server-time="([^"]+)"/.exec(page)?.[1] ?? '';
+    eq(serverTime.length > 0, true, 'the board states its clock:');
+    const readings = issueRisk(stale, serverTime);
+    eq(readings.length, 2, 'late and untouched are two readings, each with a reason:');
+
+    // The card carries both, and the clean card carries none — not an empty row.
+    const start = page.indexOf(`data-id="${stale.id}"`);
+    const staleCard = page.slice(start, page.indexOf('</article>', start));
+    eq(staleCard.includes('class="iss-card-risk"'), true, 'the assessment row is on the card:');
+    for (const reading of readings) {
+      eq(
+        staleCard.includes(riskBadge(reading.level, { label: reading.label, reasons: reading.reasons })),
+        true,
+        `the card carries "${reading.label}":`,
+      );
+      eq(staleCard.includes(reading.reasons[0]!), true, 'with the reason it was flagged:');
+    }
+    // The assessment is only as good as the date it reads, and the card used to
+    // truncate `due: 2026-01-01` to `2026` — a year, shown as a due date, and
+    // read as 1 January by anything that tried to measure it.
+    eq(staleCard.includes('2026-01-01'), true, 'the card shows the due date the author wrote:');
+
+    const freshStart = page.indexOf(`data-id="${fresh.id}"`);
+    const freshCard = page.slice(freshStart, page.indexOf('</article>', freshStart));
+    eq(freshCard.includes('iss-card-risk'), false, 'a card with nothing to say has no risk row:');
+
+    // The script is handed the same assessment the server rendered the page with,
+    // so a rebuilt card cannot disagree with the one it replaces — this is the
+    // assertion that would fail if the card and the script each had their own
+    // idea of "stalled".
+    const embedded = JSON.parse(/var ISSUE_RISK = (\{.*?\});/.exec(page)?.[1] ?? '{}') as Record<string, string>;
+    eq(
+      /<div class="iss-card-risk">([\s\S]*?)<\/div>/.exec(staleCard)?.[1],
+      embedded[stale.id],
+      'the card renders exactly the assessment the script holds:',
+    );
+    eq(embedded[fresh.id], '', 'and the clean card gets an empty string:');
+
+    // The list view is the board's table surface: a row has to carry the same
+    // reading, or a card that is late stops being late the moment a reader
+    // switches views. Both views ship in one response, so the row is here too.
+    const listStart = page.indexOf('id="iss-list-container"');
+    const listBody = page.slice(listStart);
+    const rowStart = listBody.indexOf(`<div class="iss-list-row" data-id="${stale.id}"`);
+    const row = listBody.slice(rowStart, listBody.indexOf('iss-row-right', rowStart));
+    eq(rowStart > 0, true, 'the row is rendered:');
+    for (const reading of readings) {
+      eq(
+        row.includes(riskBadge(reading.level, { label: reading.label, reasons: reading.reasons })),
+        true,
+        `the row carries "${reading.label}":`,
+      );
+    }
+    // A clean row still carries its state chip, so the check is the risk badge's
+    // own glyphs — the one thing no other chip prints.
+    const cleanStart = listBody.indexOf(`<div class="iss-list-row" data-id="${fresh.id}"`);
+    const cleanRow = listBody.slice(cleanStart, listBody.indexOf('iss-row-right', cleanStart));
+    eq(issueRisk(fresh, serverTime).length, 0, 'the clean card has nothing to say:');
+    eq(
+      cleanRow.includes(RISK_ICON.watch) || cleanRow.includes(RISK_ICON.blocked),
+      false,
+      'and its row prints no assessment:',
+    );
+
+    const sync = (await (
+      await fetch(`${base_}/console/issues/sync`, { headers: { cookie: session.cookie } })
+    ).json()) as { snapshot: { risk: Record<string, string>; serverTime: string } };
+    eq(typeof sync.snapshot.risk[stale.id], 'string', 'the sync payload carries the assessment:');
+    eq(sync.snapshot.risk[stale.id], embedded[stale.id], 'the same one the page used:');
   } finally {
     await server.close();
     await db.close();

@@ -34,6 +34,7 @@ import type { AsyncDb } from '../core/db.ts';
 import type { Coordinator } from '../coord/coordinator.ts';
 import type { CoordinationRequest } from '../core/types.ts';
 import { awaitingHumanReview } from './review.ts';
+import { emptyState, pageHeader, statusChip, type Tone } from './components.ts';
 import { searchClaims, type ClaimSummary } from './report.ts';
 import { claimDetailUrl, esc, requestDetailUrl, withReturnTo } from './render.ts';
 import {
@@ -277,10 +278,12 @@ const KIND_LABEL: Record<FeedKind, string> = {
   evidence: 'Evidence',
 };
 
-const KIND_BADGE: Record<FeedKind, string> = {
-  decision: 'v-badge-warn',
-  blocked: 'v-badge-risk',
-  evidence: 'v-badge-info',
+/** Which of the three the item is. The tones are the shared ones: a blocked
+ * request is the same red here as it is in a list cell or a panel. */
+const KIND_TONE: Record<FeedKind, Tone> = {
+  decision: 'warn',
+  blocked: 'risk',
+  evidence: 'info',
 };
 
 export interface FeedPageOptions {
@@ -351,7 +354,7 @@ export function renderFeedPage(opts: FeedPageOptions): string {
     title: i.title,
     sub: i.recordId,
     cells: [
-      `<span class="v-badge ${KIND_BADGE[i.kind]}">${esc(KIND_LABEL[i.kind])}</span> <span class="v-mono v-meta">${esc(i.state)}</span>`,
+      `${statusChip(KIND_LABEL[i.kind], { tone: KIND_TONE[i.kind], dot: false })} <span class="v-mono v-meta">${esc(i.state)}</span>`,
       esc(i.why),
       i.scope
         ? `<a class="v-mono v-meta" href="${esc(`/console/buzz/${encodeURIComponent(i.scope)}`)}">#${esc(i.scope)}</a>`
@@ -362,9 +365,16 @@ export function renderFeedPage(opts: FeedPageOptions): string {
 
   const body = shown.length
     ? inspectTable(['Item', 'Kind', 'Why it is here', 'Where', 'Waiting'], rows, hrefFor)
-    : `<div class="v-list-group"><p class="v-sub">Nothing in this filter needs attention.</p>
-<p class="v-meta">The feed reads requests awaiting a human decision, requests that were denied, failed, halted or expired, and claims marked disputed or stale. An empty feed means none of those exist right now — not that the reads failed.</p>
-<p class="v-sub"><a href="${esc('/console/human-work')}">Open the approval queue</a> · <a href="${esc('/console/requests')}">Browse requests</a> · <a href="${esc('/console/claims')}">Browse claims</a></p></div>`;
+    : emptyState({
+        title: 'Nothing in this filter needs attention',
+        body: 'The feed reads requests awaiting a human decision, requests that were denied, failed, halted or expired, and claims marked disputed or stale. An empty feed means none of those exist right now — not that the reads failed.',
+        note: 'Switch to All to see every kind at once, or go straight to a record list:',
+        actions: [
+          '<a class="v-btn v-btn-secondary v-btn-sm" href="/console/human-work">Open the approval queue</a>',
+          '<a class="v-btn v-btn-secondary v-btn-sm" href="/console/requests">Browse requests</a>',
+          '<a class="v-btn v-btn-secondary v-btn-sm" href="/console/claims">Browse claims</a>',
+        ],
+      });
 
   const countLine =
     model.considered === 0
@@ -375,15 +385,13 @@ export function renderFeedPage(opts: FeedPageOptions): string {
             : ''
         }`;
 
-  const page = `<div class="v-page-head">
-  <div>
-    <p class="v-eyebrow">Feed</p>
-    <h1 class="v-page-title">Inbox</h1>
-    <p class="v-sub" style="margin-top:6px;">Ranked attention: the work that is waiting on a person, and the evidence that is in question. Selecting an item opens its context beside this list; the record itself stays authoritative.</p>
-  </div>
-  <div>${tabs}</div>
-</div>
-<p class="v-meta v-count">${esc(countLine)} · read live from ${esc(model.sources.join(' and '))}</p>
+  const page = `${pageHeader({
+    eyebrow: 'Feed',
+    title: 'Inbox',
+    sub: 'Ranked attention: the work that is waiting on a person, and the evidence that is in question. Selecting an item opens its context beside this list; the record itself stays authoritative.',
+    actions: tabs,
+    count: `${countLine} · read live from ${model.sources.join(' and ')}`,
+  })}
 ${body}`;
 
   return renderInspectLayout({

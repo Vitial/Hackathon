@@ -2,6 +2,7 @@ import type { Ledger } from '../ledger/ledger.ts';
 import type { Coordinator } from '../coord/coordinator.ts';
 import type { CoordinationRequest } from '../core/types.ts';
 import { approvalMessage } from '../gov/operator.ts';
+import { emptyState } from './components.ts';
 import { SAMPLE_REQUEST_PREFIX, SAMPLE_SCOPE } from './activation.ts';
 
 /**
@@ -88,7 +89,6 @@ export const REVIEW_STYLE = `<style>
 .rv-approve button:hover{filter:brightness(1.1)}
 .rv-decline button{background:transparent;color:var(--v-ink);border:1px solid var(--v-line-strong)}
 .rv-decline button:hover{border-color:var(--v-risk)}
-.rv-empty{border:1px dashed var(--v-line-strong);border-radius:var(--radius-card);padding:28px 20px;text-align:center;color:var(--v-muted);font-size:13px;background:transparent}
 .rv-refresh{font-size:12px;margin-top:10px;display:inline-block}
 </style>`;
 
@@ -159,7 +159,14 @@ ${uncertainty}
 <p class="rv-note">Approval records a decision to BEGIN work, not final-deliverable authorization or evidence of execution or measurement.</p>
 <nav class="rv-pager" aria-label="Review pages">${page > 0 ? `<a href="${esc(opts.home ?? '/')}?reviewPage=${page - 1}#pending-review">Previous reviews</a>` : ''}<span>Page ${page + 1} of ${Math.max(1, Math.ceil(pending.length / 100))}</span>${pending.length > (page + 1) * 100 ? `<a href="${esc(opts.home ?? '/')}?reviewPage=${page + 1}#pending-review">Next reviews</a>` : ''}</nav>
 <noscript><p class="sub">JavaScript disabled: standard full-page form submission is active.</p></noscript>
-<div class="rv-grid">${cards.join('') || '<div class="rv-empty">Queue clear. No admitted requests awaiting human review.</div>'}</div>
+<div class="rv-grid">${
+    cards.join('') ||
+    emptyState({
+      title: 'Queue clear',
+      body: 'No admitted requests are awaiting human review. A request appears here when it is ADMITTED, carries a REQUEST message class, and bids human minutes.',
+      actions: ['<a class="v-btn v-btn-secondary v-btn-sm" href="/console/requests">Browse all requests</a>'],
+    })
+  }</div>
 <p><a class="rv-refresh" href="#" data-review-refresh>Refresh review queue</a></p></section>
 <script>${REVIEW_SCRIPT}</script>`;
 }

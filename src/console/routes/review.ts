@@ -25,6 +25,7 @@ import { requireAuth, type AuthContext, type RouteDef } from './registry.ts';
 import type { AsyncDb } from '../../core/db.ts';
 import { listReviews, openReview } from '../../coding/review.ts';
 import { renderReviewPage } from '../code-review.ts';
+import { emptyState, reviewTone, sectionHeader, statusChip } from '../components.ts';
 
 export interface ReviewEnv {
   db: AsyncDb;
@@ -66,20 +67,17 @@ function errorPath(base: string, message: string): string {
  * it, in the same place the review page shows its own errors.
  */
 /**
- * A review's status as a badge. The status text itself is the label, so the
- * colour is a second channel rather than the only one — a reader who cannot
- * distinguish the tints still reads "REJECTED_ALL".
+ * A review's status as the shared status chip. The status text itself is the
+ * label, so the colour is a second channel rather than the only one — a reader
+ * who cannot distinguish the tints still reads "REJECTED_ALL".
+ *
+ * This was a local `STATUS_TONE` map and a class name built by concatenation,
+ * which is how a review's status and the task row that links to it could
+ * disagree — and how a status the map had never heard of silently took the info
+ * tint by string default rather than by a decision anyone made.
  */
-const STATUS_TONE: Record<string, 'good' | 'warn' | 'risk'> = {
-  COMPLETED: 'good',
-  CHANGES_ACCEPTED: 'warn',
-  CHANGES_REQUESTED: 'warn',
-  AGENT_FIX: 'warn',
-  REJECTED_ALL: 'risk',
-};
-
 function statusBadge(status: string): string {
-  return `<span class="v-badge v-badge-${STATUS_TONE[status] ?? 'info'}">${esc(status)}</span>`;
+  return statusChip(status, { tone: reviewTone(status) });
 }
 
 function sinceLabel(at: string, now: string): string {
@@ -106,7 +104,10 @@ export function renderReviewIndexPage(
 ): string {
   const rows =
     reviews.length === 0
-      ? `<div class="v-empty"><h3>No code reviews opened yet</h3><p>A review compares a working tree against a git baseline and gates the change behind hunk-by-hunk human decisions. Open one below.</p></div>`
+      ? emptyState({
+          title: 'No code reviews opened yet',
+          body: 'A review compares a working tree against a git baseline and gates the change behind hunk-by-hunk human decisions. Open one below.',
+        })
       : `<div class="v-table-wrap"><table class="v-table"><thead><tr><th>Mission</th><th>Status</th><th>Baseline</th><th>Working tree</th><th>Comments</th><th>Updated</th></tr></thead><tbody>${reviews
           .map(
             (r) =>
@@ -126,14 +127,18 @@ ${opts.notice ? `<p class="sub" role="status">${esc(opts.notice)}</p>` : ''}
 <div class="v-stack">
 <section class="v-card v-card-flush">
 <div style="padding:18px 22px 0">
-<h2 class="v-card-title">Open reviews${reviews.length > 0 ? ` · ${reviews.length}` : ''}</h2>
-<p class="v-lede">A review is keyed by mission id and recomputed from the repository on every load. Decisions, comments and verification outcomes are what persist.</p>
+${sectionHeader({
+  title: `Open reviews${reviews.length > 0 ? ` · ${reviews.length}` : ''}`,
+  sub: 'A review is keyed by mission id and recomputed from the repository on every load. Decisions, comments and verification outcomes are what persist.',
+})}
 </div>
 ${rows}
 </section>
 <section class="v-card">
-<h2 class="v-card-title">Open a review</h2>
-<p class="v-lede">Reuse a mission id to continue a review of the same change set; a new id starts a fresh gate. The working directory is read on this host, so it must exist on the server.</p>
+${sectionHeader({
+  title: 'Open a review',
+  sub: 'Reuse a mission id to continue a review of the same change set; a new id starts a fresh gate. The working directory is read on this host, so it must exist on the server.',
+})}
 <form method="post" action="/console/review" class="v-stack-sm" style="margin-top:14px">
 <input type="hidden" name="csrf" value="${esc(opts.csrf)}">
 <input type="hidden" name="action" value="open">

@@ -187,6 +187,26 @@ export function recordRefsFromThread(messages: readonly BuzzMessageLike[]): {
   return { refs, withheld: Math.max(0, total - refs.length) };
 }
 
+/**
+ * The records *one* message references, deduped, in the order they appear.
+ *
+ * The thread scan answers "what is this room about"; this answers "what does
+ * this message carry", which is what a chip on the message needs. Same
+ * extraction underneath, so a message cannot be credited with a reference the
+ * panel does not see, or miss one it does.
+ */
+export function recordRefsFromMessage(message: BuzzMessageLike): BuzzRecordRef[] {
+  const seen = new Set<string>();
+  const out: BuzzRecordRef[] = [];
+  for (const ref of refsInMessage(message)) {
+    const key = refKey(ref);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ref);
+  }
+  return out;
+}
+
 export interface BuzzContextEntry {
   kind: BuzzRecordKind;
   id: string;
@@ -534,4 +554,99 @@ export const BUZZ_CONTEXT_STYLE = `<style>
   .buzz-ctx-foot{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0;}
   /* While a swap is in flight the region says so rather than looking dead. */
   .buzz-context[aria-busy="true"]{opacity:.6;}
+</style>`;
+
+/**
+ * A message's attached records, as chips.
+ *
+ * This is the *derived* half of attaching a record to a message: nothing new is
+ * stored, because the message text already is the reference — it is what the
+ * panel reads, what a relay copy carries, and what survives an export. A chip is
+ * that reference read back with the subject and state the room has already
+ * loaded, rendered on the message that carries it.
+ *
+ * The fallback matters as much as the chip: a record this room has not read (or
+ * one the panel's cap left out) still gets a chip, labelled with its id and
+ * linking to the Console. A reference is never silently unlinked.
+ *
+ * Each chip is a real URL and carries the same open-in-place attribute the
+ * message's own links do, so it opens the panel beside the conversation with
+ * JavaScript and lands on the record without it.
+ */
+export function renderRecordRefChips(
+  refs: readonly BuzzRecordRef[],
+  entries: readonly BuzzContextEntry[],
+  opts: { roomUrl: string },
+): string {
+  if (!refs.length) return '';
+  const byKey = new Map(entries.map((entry) => [refKey(entry), entry]));
+  const chips = refs
+    .map((ref) => {
+      const key = refKey(ref);
+      const entry = byKey.get(key);
+      const href = entry?.href ?? fallbackHref(ref, opts.roomUrl);
+      const unreadable = entry?.unavailable ?? null;
+      const label = entry && !unreadable && entry.title ? entry.title : ref.id;
+      const title = unreadable
+        ? unreadable
+        : `Open ${KIND_LABEL[ref.kind].toLowerCase()} ${ref.id} beside the conversation`;
+      return `<a class="buzz-ref-chip${unreadable ? ' buzz-ref-chip--unavailable' : ''}" href="${esc(href)}" data-buzz-panel-open="${esc(key)}" title="${esc(title)}"><span class="buzz-ref-chip__kind">${esc(KIND_LABEL[ref.kind])}</span><span class="buzz-ref-chip__label">${esc(label)}</span>${entry ? stateChip(entry.state, Boolean(unreadable)) : ''}</a>`;
+    })
+    .join('');
+  return `<div class="buzz-ref-strip" data-buzz-refs>${chips}</div>`;
+}
+
+/** A chip's text, without its markup: what a chip inserts as a link's label. */
+function chipLabel(entry: BuzzContextEntry): string {
+  return entry.unavailable || !entry.title ? entry.id : entry.title;
+}
+
+/**
+ * The composer's attach picker: the records this room already references, each
+ * a chip that inserts the record's canonical link into the message being
+ * written.
+ *
+ * It offers what the room has already read — the panel's own entries — so the
+ * affordance costs no statement of its own, and the chip it inserts is the very
+ * link the panel and the message chip strip both read back. A record this room
+ * has never seen is attached by pasting its link: same result, because the chip
+ * comes from the text rather than from this control.
+ *
+ * Rendered `hidden` and unhidden by the room's own script: with JavaScript off
+ * there is no way to insert into the field, and a control that does nothing is
+ * worse than no control at all.
+ */
+export function renderAttachPicker(entries: readonly BuzzContextEntry[], opts: { roomUrl: string }): string {
+  const chips = entries
+    .map(
+      (entry) =>
+        `<button type="button" class="buzz-ref-chip buzz-attach__chip" data-buzz-attach="${esc(entry.href)}" data-buzz-attach-label="${esc(chipLabel(entry))}">` +
+        `<span class="buzz-ref-chip__kind">${esc(KIND_LABEL[entry.kind])}</span>` +
+        `<span class="buzz-ref-chip__label">${esc(chipLabel(entry))}</span>` +
+        `${stateChip(entry.state, Boolean(entry.unavailable))}</button>`,
+    )
+    .join('');
+  return `<div class="buzz-attach" id="buzz-attach" data-buzz-room="${esc(opts.roomUrl)}" hidden>
+  <p class="buzz-attach__head">Attach a record to this message</p>
+  ${entries.length ? `<div class="buzz-attach__row">${chips}</div>` : `<p class="buzz-attach__none">Nothing is linked in this room yet. Paste a request, claim or issue link into the message and it is attached when you send it.</p>`}
+</div>`;
+}
+
+/**
+ * The chips' own chrome: `--buzz-*` only, and the same state ramp the panel
+ * prints (`buzz-ctx-state`, emitted with the panel's stylesheet — the room page
+ * always carries it, because the shell renders the region beside it).
+ */
+export const BUZZ_REF_CHIP_STYLE = `<style>
+  .buzz-ref-strip{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
+  .buzz-ref-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;border:1px solid var(--buzz-border-soft);background:var(--buzz-inset);border-radius:var(--buzz-r-pill);padding:2px 9px 2px 4px;font-size:11.5px;color:var(--buzz-ink-1);text-decoration:none;cursor:pointer;transition:border-color .12s var(--buzz-ease),color .12s var(--buzz-ease);}
+  .buzz-ref-chip:hover{border-color:var(--buzz-accent);color:var(--buzz-accent);}
+  .buzz-ref-chip:focus-visible{outline:2px solid var(--buzz-accent-ring);outline-offset:1px;}
+  .buzz-ref-chip__kind{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--buzz-ink-3);background:var(--buzz-surface);border-radius:var(--buzz-r-pill);padding:1px 6px;}
+  .buzz-ref-chip__label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px;}
+  .buzz-ref-chip--unavailable{border-style:dashed;}
+  .buzz-attach{display:flex;flex-direction:column;gap:8px;border:1px solid var(--buzz-border-soft);background:var(--buzz-surface);border-radius:var(--buzz-r-md);padding:10px;margin-bottom:6px;}
+  .buzz-attach__head{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--buzz-ink-3);margin:0;}
+  .buzz-attach__row{display:flex;flex-wrap:wrap;gap:6px;}
+  .buzz-attach__none{font-size:12px;color:var(--buzz-ink-3);margin:0;line-height:1.45;}
 </style>`;

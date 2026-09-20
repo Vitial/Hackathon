@@ -1,6 +1,7 @@
 import type { AsyncDb } from '../core/db.ts';
 import { auditLinks, queryAudit } from '../ledger/export.ts';
 import { listUsers } from '../core/auth.ts';
+import { statusChip } from './components.ts';
 
 /**
  * FINAL-006: the admin audit-log surface.
@@ -90,9 +91,7 @@ export async function renderAuditPage(db: AsyncDb, tenant: string, opts: AuditPa
   // Machine and system actors read as neutral chips so a human actor stands out.
   const actorCell = (actor: string): string => {
     const human = people.has(actor) || actor.includes('@');
-    return human
-      ? `<span class="v-strong">${actorDisplay(actor)}</span>`
-      : `<span class="v-badge"><span class="dot"></span>${actorDisplay(actor)}</span>`;
+    return human ? `<span class="v-strong">${actorDisplay(actor)}</span>` : statusChip(actorDisplay(actor));
   };
 
   const rows = page.rows

@@ -36,15 +36,18 @@ import {
   type InspectTarget,
 } from '../inspector.ts';
 import {
+  TASK_FEED_EMPTY,
   buildTasks,
   renderAgentTaskDetail,
   renderAgentTaskList,
   snapshotTasks,
+  taskFeedItem,
   taskFor,
   taskTotals,
   type AgentTask,
   type ReviewLink,
 } from '../agent-tasks.ts';
+import { emptyState, timeline } from '../components.ts';
 import { listReviews } from '../../coding/review.ts';
 
 export interface AgentTasksEnv {
@@ -148,6 +151,26 @@ function renderFeedItems(feed: { action: string; actor: string; detail: string |
   at: string;
 }[] {
   return feed.map((e) => ({ action: e.action, actor: e.actor, detail: e.detail ?? '', at: e.at }));
+}
+
+/**
+ * The feed the poller draws: the rows' data, and the list already rendered by
+ * the same `timeline` the page uses. Sending the markup rather than letting the
+ * client build it is what keeps one row shape in the codebase — the previous
+ * client copy had already drifted from the server's (it dropped the timestamp).
+ */
+function feedPayload(
+  feed: { action: string; actor: string; detail: string | null; at: string }[],
+  now: string,
+): { rows: ReturnType<typeof renderFeedItems>; html: string } {
+  const rows = renderFeedItems(feed);
+  return {
+    rows,
+    html: timeline(
+      rows.map((e) => taskFeedItem(e, now)),
+      { empty: TASK_FEED_EMPTY },
+    ),
+  };
 }
 
 export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
@@ -288,7 +311,13 @@ export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
               title: 'Agent Tasks',
               navKey: 'agentTasks',
               hideHeader: true,
-              body: `<div class="v-empty"><h3>Task not found</h3><p>No request <span class="v-mono">${esc(requestId)}</span> exists for this workspace, or it has aged out.</p><p><a class="v-btn v-btn-secondary v-btn-sm" href="/console/agent-tasks">← All ongoing tasks</a></p></div>`,
+              body: emptyState({
+                title: 'Task not found',
+                body: `No request ${requestId} exists for this workspace, or it has aged out.`,
+                actions: [
+                  '<a class="v-btn v-btn-secondary v-btn-sm" href="/console/agent-tasks">← All ongoing tasks</a>',
+                ],
+              }),
             }),
           );
           return;
@@ -303,11 +332,11 @@ export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
   const feed=document.getElementById('v-agent-feed');if(!feed)return;
   const id=feed.getAttribute('data-request');const live=document.getElementById('v-agent-live');
   const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-  const draw=(rows)=>{feed.innerHTML=rows.length?rows.map(e=>'<div class="v-feed-item"><div class="v-feed-icon">'+esc((e.action||'')[0])+'</div><div class="v-feed-body"><div class="v-feed-title">'+esc(e.action)+'</div>'+(e.detail?'<div class="v-feed-meta">'+esc(e.detail)+'</div>':'')+'</div></div>').join(''):'<p class="v-meta">No activity recorded yet.</p>';};
+  const draw=(d)=>{if(!feed)return;if(typeof d.html==='string')feed.innerHTML=d.html;};
   let timer;
   const pull=async()=>{try{
     const r=await fetch('/console/agent-tasks/'+encodeURIComponent(id)+'/feed',{headers:{accept:'application/json'}});if(!r.ok)return;
-    const d=await r.json();draw(d.feed||[]);
+    const d=await r.json();draw(d);
     if(live)live.setAttribute('data-state',d.runtime==='processing'?'live':'idle');
     schedule(d.runtime==='processing');
   }catch{/* transient */}};
@@ -350,6 +379,7 @@ export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
           return;
         }
         const feedRows = await readFeed(ctx.env.db, ctx.env.tenant, requestId);
+        const payload = feedPayload(feedRows, ctx.at);
         sendJson(ctx.res, 200, {
           ok: true,
           id: requestId,
@@ -359,7 +389,8 @@ export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
           tokens: task.totalTokens,
           subAgents: task.subAgentCount,
           updatedAt: task.request.updatedAt,
-          feed: renderFeedItems(feedRows),
+          feed: payload.rows,
+          html: payload.html,
         });
       },
     },

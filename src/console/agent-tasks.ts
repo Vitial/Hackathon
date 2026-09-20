@@ -21,6 +21,16 @@
 
 import type { CoordinationRequest } from '../core/types.ts';
 import { esc, requestDetailUrl, withReturnTo } from './render.ts';
+import {
+  emptyState,
+  pageHeader,
+  reviewTone,
+  sectionHeader,
+  statusChip,
+  timeline,
+  toneOf,
+  type TimelineItem,
+} from './components.ts';
 
 /** A settled task. The list shows only the non-terminal set; the tree shows all. */
 export const TERMINAL_STATES = new Set(['COMPLETED', 'DECLINED', 'FAILED', 'EXPIRED', 'TERMINATED_BUDGET', 'DENIED']);
@@ -288,15 +298,23 @@ export function taskTotals(tasks: AgentTask[]): TaskTotals {
 /* ─────────────────────────────────────────────── HTML fragments ─────────── */
 
 function badge(status: DerivedStatus, live: boolean): string {
-  const cls = status.tone ? `v-badge v-badge-${status.tone}` : 'v-badge';
-  // The pulse dot only reads as "moving" for an live-ish status; a terminal or
+  // The pulse dot only reads as "moving" for a live-ish status; a terminal or
   // plainly-queued row keeps a static dot.
   const pulse = (status.tone === 'info' || status.runtime === 'processing') && live;
-  const dot = pulse
-    ? '<span class="v-pulse-dot" aria-hidden="true"></span>'
-    : '<span class="dot" aria-hidden="true"></span>';
-  return `<span class="${cls}">${dot}${esc(status.label)}</span>`;
+  return statusChip(status.label, { tone: toneOf(status.tone), pulse });
 }
+
+/** One audit row as a timeline item — the same shape the detail view renders. */
+export function taskFeedItem(
+  e: { action: string; actor: string; detail: string; at: string },
+  now: string,
+): TimelineItem {
+  return { title: e.action, detail: e.detail, time: relAge(now, e.at) };
+}
+
+/** What the feed says before anything has happened. One copy: the server renders
+ * it and the poll payload carries it, so the poller cannot drift from the page. */
+export const TASK_FEED_EMPTY = '<p class="v-meta">No activity recorded for this task yet.</p>';
 
 function dotFor(status: DerivedStatus): string {
   return `<span class="v-agent-dot" data-state="${status.runtime}" aria-hidden="true"></span>`;
@@ -380,7 +398,13 @@ function reviewActionHtml(requestId: string, review: ReviewLink | undefined): st
   if (!review) {
     return `<a class="v-btn v-btn-secondary v-btn-sm" href="${esc(href)}" title="No review is open under this task's id">Review change set →</a>`;
   }
-  return `<span class="v-badge ${review.status === 'COMPLETED' ? 'v-badge-good' : 'v-badge-info'}" title="Review ${esc(review.status)} — updated ${esc(review.updatedAt)}">review · ${esc(review.status)}</span> <a class="v-btn v-btn-secondary v-btn-sm" href="${esc(href)}">Open review →</a>`;
+  // The same chip the review index prints for this status, from the same map:
+  // a task row and the page it opens cannot disagree about the colour of
+  // "CHANGES_REQUESTED". The status and the review's age stay in the tooltip.
+  return `${statusChip(`review · ${review.status}`, {
+    tone: reviewTone(review.status),
+    title: `Review ${review.status} — updated ${review.updatedAt}`,
+  })} <a class="v-btn v-btn-secondary v-btn-sm" href="${esc(href)}">Open review →</a>`;
 }
 
 /** One expandable list row. Uses <details name="v-tasks"> so only one opens. */
@@ -480,7 +504,15 @@ export function renderAgentTaskList(
     ${renderLivePill(totals.anyLive)}
   </div>
   ${renderKpiTiles(totals)}
-  ${rows ? `<div class="v-tasks">${rows}</div>` : '<div class="v-empty"><h3>No ongoing tasks</h3><p>No coding-agent execution is currently in the pipeline.</p></div>'}
+  ${
+    rows
+      ? `<div class="v-tasks">${rows}</div>`
+      : emptyState({
+          title: 'No ongoing tasks',
+          body: 'No coding-agent execution is currently in the pipeline. A task appears here as soon as a request is admitted to an agent.',
+          actions: ['<a class="v-btn v-btn-secondary v-btn-sm" href="/console/requests">Browse requests</a>'],
+        })
+  }
 </div>`;
 }
 
@@ -493,45 +525,33 @@ export function renderAgentTaskDetail(
   review?: ReviewLink,
 ): string {
   const r = task.request;
-  const feedHtml = feed.length
-    ? `<div class="v-feed">${feed
-        .map(
-          (e) => `<div class="v-feed-item" data-seq>
-      <div class="v-feed-icon">${esc(e.action.slice(0, 1))}</div>
-      <div class="v-feed-body">
-        <div class="v-feed-title">${esc(e.action)}</div>
-        ${e.detail ? `<div class="v-feed-meta">${esc(e.detail)}</div>` : ''}
-      </div>
-      <div class="v-feed-time">${esc(relAge(now, e.at))}</div>
-    </div>`,
-        )
-        .join('')}</div>`
-    : '<p class="v-meta">No activity recorded for this task yet.</p>';
-  return `<div class="v-page-head">
-  <div>
-    <p class="v-eyebrow">Agent task</p>
-    <h1 class="v-page-title">${esc(r.goal)}</h1>
-    <div class="v-task-side" style="margin-top:8px;">
-      ${badge(task.status, task.status.runtime === 'processing')}
-      <span class="v-mono v-meta">${esc(r.id)}</span>
-      <span class="v-meta">${esc(r.originScope)}→${esc(r.targetScope)}</span>
-      <span class="v-meta">updated ${esc(task.relativeAge)}</span>
-    </div>
-  </div>
-  ${renderLivePill(task.status.runtime === 'processing')}
+  const feedHtml = timeline(
+    feed.map((e) => taskFeedItem(e, now)),
+    { empty: TASK_FEED_EMPTY },
+  );
+  return `${pageHeader({
+    eyebrow: 'Agent task',
+    title: r.goal,
+    actions: renderLivePill(task.status.runtime === 'processing'),
+  })}
+<div class="v-task-side" style="margin:-8px 0 0;">
+  ${badge(task.status, task.status.runtime === 'processing')}
+  <span class="v-mono v-meta">${esc(r.id)}</span>
+  <span class="v-meta">${esc(r.originScope)}→${esc(r.targetScope)}</span>
+  <span class="v-meta">updated ${esc(task.relativeAge)}</span>
 </div>
 <div class="v-grid-wide" style="margin-top:16px;">
   <div class="v-stack">
     ${guardStripHtml(task, now)}
     ${renderSwarmChain(task)}
     <section class="v-card v-card-flush"><div style="padding:18px 20px;">
-      <h2 class="v-card-title" style="margin-bottom:10px;">Live feed</h2>
+      ${sectionHeader({ title: 'Live feed', sub: 'Runtime actions recorded against this task, newest last.' })}
       <div id="v-agent-feed" data-request="${esc(r.id)}">${feedHtml}</div>
     </div></section>
   </div>
   <div class="v-stack">
     <section class="v-card v-card-flush"><div style="padding:18px 20px;">
-      <h2 class="v-card-title" style="margin-bottom:10px;">Agents</h2>
+      ${sectionHeader({ title: 'Agents', sub: task.subAgents.length ? `${task.subAgents.length} sub-agent(s) below the primary.` : undefined })}
       <div class="v-agent-tree">
         <div class="v-agent-tree-row v-agent-tree-row--primary">
           ${dotFor(task.status)}
@@ -542,12 +562,12 @@ export function renderAgentTaskDetail(
       </div>
     </div></section>
     <section class="v-card v-card-flush"><div style="padding:18px 20px;">
-      <h2 class="v-card-title" style="margin-bottom:6px;">Code review</h2>
-      ${
-        review
-          ? `<p class="v-sub" style="font-size:12.5px;margin:0 0 10px;">A review is open under this task's id — <strong>${esc(review.status)}</strong>, updated ${esc(review.updatedAt)}. Changes are decided hunk by hunk, and a VERIFIED snapshot is created only after review and verification pass.</p>`
-          : `<p class="v-sub" style="font-size:12.5px;margin:0 0 10px;">No review is open under this task's id. A review compares a working tree against a git baseline and gates the change hunk by hunk, with a secret scan before any snapshot.</p>`
-      }
+      ${sectionHeader({
+        title: 'Code review',
+        sub: review
+          ? `A review is open under this task's id — ${review.status}, updated ${review.updatedAt}. Changes are decided hunk by hunk, and a VERIFIED snapshot is created only after review and verification pass.`
+          : 'No review is open under this task\u2019s id. A review compares a working tree against a git baseline and gates the change hunk by hunk, with a secret scan before any snapshot.',
+      })}
       <div style="display:flex;gap:8px;flex-wrap:wrap;">${reviewActionHtml(r.id, review)}</div>
     </div></section>
     <a class="v-btn v-btn-secondary v-btn-sm" href="${esc(requestDetailUrl(r.id))}">Full request record →</a>

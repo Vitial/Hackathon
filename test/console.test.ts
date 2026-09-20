@@ -3,6 +3,7 @@ import { request as httpRequest } from 'node:http';
 import { buildReport, COST_CURVE_BUDGET, MAX_ROOMS, ROOM_REQUESTS } from '../src/console/report.ts';
 import { lineChart, renderHtml, tierStack } from '../src/console/render.ts';
 import { composeDigest } from '../src/console/digest.ts';
+import { readinessTone, riskBadge, statusChip } from '../src/console/components.ts';
 import {
   DEFAULT_BIND_HOST,
   isLoopbackBindHost,
@@ -3051,6 +3052,14 @@ T('FLOW-013: home renders the system-readiness strip with tri-state pills', asyn
     eq(html.includes('id="system-readiness"'), true, 'readiness strip rendered on home:');
     eq(html.includes('>database</strong>'), true, 'database check surfaced:');
     eq(html.includes('not configured'), true, 'unconfigured dependencies read as grey, not red:');
+    // Grey is a *tone*, and the tone is the map's: the pill was a hand-drawn
+    // chip with its own dot colours before this, which is how "not configured"
+    // came to look different here than anywhere else that says it.
+    eq(
+      html.includes(statusChip('not configured', { tone: readinessTone('unconfigured-optional') })),
+      true,
+      'and as the shared chip, toned by the shared map:',
+    );
   } finally {
     await server.close();
     await db.close();
@@ -3986,6 +3995,13 @@ T('FINAL-009: visible deliverable authoring path on approved requests with groun
     eq(afterDraft.includes('Launch notes citing release'), true);
     eq(afterDraft.includes('Finding'), true);
     eq(afterDraft.includes('All grounding checks passed.'), true);
+    // A grounding verdict is an assessment, so it is the risk badge: the level,
+    // the glyph and the reason, rather than a sentence painted green.
+    eq(
+      afterDraft.includes(riskBadge('low', { label: 'All grounding checks passed.' })),
+      true,
+      'the clean verdict is the shared risk badge:',
+    );
     eq(afterDraft.includes('Approve deliverable'), true);
 
     // 4. Approve deliverable

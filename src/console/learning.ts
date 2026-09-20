@@ -3,6 +3,7 @@ import type { OrganizationalCompiler } from '../compiler/compiler.ts';
 import { cardEvaluationEvidence, describeCardReadOnly } from '../compiler/registry.ts';
 import type { CognitiveRouter } from '../router/router.ts';
 import { COMPILE_MIN_SUCCESSES, type CompileCandidate } from './learning-actions.ts';
+import { riskBadge, skillCardTone, statusChip } from './components.ts';
 
 /**
  * FINAL-004: the human surface for learning review.
@@ -70,12 +71,12 @@ export async function renderLearningPage(
         .catch((): string[] => []);
       const gapCell =
         gaps.length === 0
-          ? '<span class="v-badge v-badge-good">none</span>'
-          : `<span class="v-badge v-badge-warn">${gaps.length} open</span>`;
+          ? riskBadge('low', { label: 'none' })
+          : riskBadge('watch', { label: `${gaps.length} open`, reasons: gaps });
       return `<tr>
 <td><a href="/console/learning/${esc(encodeURIComponent(card.id))}"><code>${esc(card.id)}</code></a></td>
 <td><strong>${esc(card.intent)}</strong></td>
-<td><span class="v-badge">${esc(card.state)}</span> <span class="v-meta">v${card.version}</span></td>
+<td>${statusChip(card.state, { tone: skillCardTone(card.state) })} <span class="v-meta">v${card.version}</span></td>
 <td>${gapCell}</td></tr>`;
     }),
   );

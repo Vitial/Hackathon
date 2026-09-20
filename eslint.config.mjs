@@ -5,6 +5,7 @@
 // boundary (protocol socket paths, test tmpdirs).
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
+import globals from 'globals';
 
 export default tseslint.config(
   {
@@ -105,6 +106,14 @@ export default tseslint.config(
     files: ['src/talk/canary.ts'],
     rules: {
       'no-restricted-syntax': 'off',
+    },
+  },
+  {
+    // Plain-JS stdio fixtures (e.g. test/fake-dsh-runtime.mjs) run on node
+    // globals without a TS env: declare them instead of undef-erroring.
+    files: ['test/*.mjs'],
+    languageOptions: {
+      globals: globals.node,
     },
   },
 );

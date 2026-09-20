@@ -10,7 +10,8 @@ binding record.
 |---|---|---|---|
 | [yc-software/qm](https://github.com/yc-software/qm) | absorb-from source: `src/vendor/qm/` leaf modules (`loops/governor.ts` first). We do **not** depend on or fork QM. | MIT | `60ba79195dc84aa85a23f238749656e11c88696c` (2026-09-08) |
 | [Buzz](https://buzz.xyz) | talk-layer surface (not vendored as code; bound at runtime). | Apache-2.0 | `218633b8fd6ee41aee8eb18ba9806e8d90694751` (2026-09-08) |
-| [1jehuang/jcode](https://github.com/1jehuang/jcode) | hands: driven as a sibling process over `jcode-harness-api` (protocol mirrored in `src/jcode/`, not vendored). | MIT | `e65e47c31af2ab79346458ff1511bea533930b59` (2026-09-09) |
+| [1jehuang/jcode](https://github.com/1jehuang/jcode) | hands: driven as a sibling process over `jcode-harness-api` (protocol mirrored in `src/jcode/`, not vendored). **Superseded by deepseek-harness** (2026-09-20). | MIT | `e65e47c31af2ab79346458ff1511bea533930b59` (2026-09-09) |
+| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | **In-tree vendored fork** at `vendor/deepseek-harness/` — whole monorepo committed for direct modification (approval round-trip, cost ceilings, cancel). 15 upstream symlinks materialized as regular copies for Windows compatibility. Replaces 1jehuang/jcode as the harness runtime. | MIT | `ddefc45fbc7f8e46dd73185e68295696d1297887` (2026-09-20) |
 
 Name-collision warning (cost us a wrong-language rewrite once): `cnjack/jcode`
 is a different, Go project. It is not used, not pinned, and must not be

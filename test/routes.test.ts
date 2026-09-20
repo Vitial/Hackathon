@@ -14,6 +14,7 @@ import {
   type RouteDef,
 } from '../src/console/routes/registry.ts';
 import { observabilityRoutes, OBSERVABILITY_CAPABILITIES } from '../src/console/routes/observability.ts';
+import { reviewTone, statusChip } from '../src/console/components.ts';
 import { complianceRoutes, COMPLIANCE_CAPABILITIES } from '../src/console/routes/compliance.ts';
 import { requestsRoutes, REQUESTS_CAPABILITIES } from '../src/console/routes/requests.ts';
 import { listsRoutes, LISTS_CAPABILITIES } from '../src/console/routes/lists.ts';
@@ -25,6 +26,7 @@ import { agentTasksRoutes, AGENT_TASKS_CAPABILITIES } from '../src/console/route
 import { reviewRoutes, REVIEW_CAPABILITIES } from '../src/console/routes/review.ts';
 import { issuesRoutes, ISSUES_CAPABILITIES } from '../src/console/routes/issues.ts';
 import { createCustomRoom } from '../src/talk/rooms.ts';
+import { createLocalReply } from '../src/console/buzz.ts';
 import type { Role } from '../src/core/auth.ts';
 import type { AsyncDb } from '../src/core/db.ts';
 
@@ -1605,6 +1607,18 @@ T('a code review opens inside the console shell, and a task links to it', async 
     const after = await fetch(`${baseUrl}/console/agent-tasks`, { headers: { cookie } });
     const afterBody = await after.text();
     eq(afterBody.includes('review · READY_FOR_REVIEW'), true, 'the row shows the review state:');
+    // Pinned against the primitive itself: the row and the review index have to
+    // read one status one way, and "they both say info" only holds while both
+    // call the same map.
+    // The row adds its own tooltip, so the comparison is the chip's opening tag
+    // (class and all, which is where the tone lives) plus its label.
+    const expectedChip = statusChip('review · READY_FOR_REVIEW', { tone: reviewTone('READY_FOR_REVIEW') });
+    eq(afterBody.includes(`${expectedChip.split('>')[0]!}>`), true, 'the row chip is the shared chip:');
+    eq(
+      afterBody.includes('review · READY_FOR_REVIEW</span>'),
+      true,
+      'toned by the shared map, with the status as its label:',
+    );
     eq(afterBody.includes('href="/console/review/TASK-1"'), true, 'the row still links to it:');
     const detail = await fetch(`${baseUrl}/console/agent-tasks/TASK-1`, { headers: { cookie } });
     const detailBody = await detail.text();
@@ -1678,6 +1692,72 @@ T('the migration boundary is explicit, not implied', () => {
   // reviewed change, not a rider on the read-only migration above.
   eq(migrated.has('POST /api/requests/:id/approve'), false, 'approvals not migrated yet:');
   eq(migrated.has('POST /api/requests/:id/decline'), false, 'declines not migrated yet:');
+});
+
+T('the Buzz context region answers ?panel= on its own, and ?open= server-side', async () => {
+  const { db, ledger, coord, comp } = await fresh();
+  await installAuthSchema(db, NOW);
+  await signupTenant(
+    db,
+    {
+      slug: TEN,
+      name: 'Acme',
+      email: 'owner@acme.test',
+      password: 'the-console-password',
+      ownerName: 'Ada',
+    },
+    NOW,
+  );
+  // A message that references a record: the region is built from the room's own
+  // conversation, so there is nothing else to seed.
+  await createLocalReply(db, TEN, 'general', null, 'eng@acme.test', 'handoff: [rq](/console/requests/rq_e2e)');
+  const server = await startConsoleServer(db, ledger, coord, comp, { tenant: TEN, now: () => NOW });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const cookie = await login(base);
+    const get = async (path: string) => {
+      const res = await fetch(`${base}${path}`, { headers: { cookie } });
+      return { status: res.status, body: await res.text() };
+    };
+
+    // The region alone: what the shell's swap script fetches. Markup only — no
+    // document, no shell, no stylesheet (the shell already emitted it).
+    const digest = await get('/console/buzz/general?panel=digest');
+    eq(digest.status, 200, 'the region answers:');
+    eq(digest.body.includes('data-buzz-context'), true, 'with the region:');
+    eq(digest.body.includes('data-open="0"'), true, 'showing the room\u2019s references:');
+    eq(digest.body.includes('<html'), false, 'and nothing around it:');
+    eq(digest.body.includes('buzz-sidebar'), false, 'no shell:');
+    eq(digest.body.includes('<style>'), false, 'no stylesheet:');
+
+    const opened = await get(`/console/buzz/general?panel=${encodeURIComponent('request:rq_e2e')}`);
+    eq(opened.status, 200, 'a selection answers:');
+    eq(opened.body.includes('data-open="1"'), true, 'opened on the record:');
+    eq(opened.body.includes('data-buzz-panel-close'), true, 'with its way back to the digest:');
+    eq(opened.body.includes('rq_e2e'), true, 'and the record it names:');
+
+    // An unknown room has no region to hand over.
+    const missing = await get('/console/buzz/no_such_room?panel=digest');
+    eq(missing.status, 404, 'an unknown room is a 404, not an empty region:');
+
+    // `?open=` is part of the room's address: the same URL renders the opened
+    // region server-side, which is the whole no-JavaScript story.
+    const page = await get(`/console/buzz/general?open=${encodeURIComponent('request:rq_e2e')}`);
+    eq(page.status, 200, 'the room renders:');
+    eq(page.body.includes('class="buzz-window buzz-window--context"'), true, 'with the shell column:');
+    eq(page.body.includes('data-open="1"'), true, 'already opened on the selection:');
+    eq(page.body.includes("querySelector('[data-buzz-context]')"), true, 'and the swap wired:');
+    eq(page.body.includes('data-buzz-panel-open="request:rq_e2e"'), true, 'the message link opens the panel:');
+    eq(page.body.includes('href="/console/requests/rq_e2e"'), true, 'and keeps the Console as its destination:');
+
+    // The region travels with the session like the page does, because it is the
+    // same data by a smaller door.
+    const anon = await fetch(`${base}/console/buzz/general?panel=digest`, { redirect: 'manual' });
+    eq(anon.status, 303, 'an anonymous region request is redirected to the login form:');
+  } finally {
+    await server.close();
+    await db.close();
+  }
 });
 
 /** A fresh CSRF token for this session (a page render is the easy source). */

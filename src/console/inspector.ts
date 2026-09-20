@@ -25,6 +25,7 @@
 // record.
 
 import { esc, renderTable } from './render.ts';
+import { claimTone, issueTone, requestTone, statusChip, type Tone } from './components.ts';
 
 export type InspectKind = 'request' | 'claim' | 'task' | 'issue';
 
@@ -82,7 +83,12 @@ export function hrefWithoutInspect(path: string, search: string): string {
   return query ? `${path}?${query}` : path;
 }
 
-export type PanelTone = 'good' | 'warn' | 'risk' | 'info' | 'neutral';
+/**
+ * The panel's tone is the shared console tone: `components.ts` owns the mapping
+ * from a request, claim or issue state, so the Inbox, a list cell and a panel
+ * chip cannot disagree about what `DENIED` looks like.
+ */
+export type PanelTone = Tone;
 
 export interface InspectorField {
   label: string;
@@ -122,38 +128,10 @@ const KIND_LABEL: Record<InspectKind, string> = {
   issue: 'Issue',
 };
 
-const TONE_CLASS: Record<PanelTone, string> = {
-  good: 'v-badge-good',
-  warn: 'v-badge-warn',
-  risk: 'v-badge-risk',
-  info: 'v-badge-info',
-  neutral: '',
-};
-
-/** Request state → tone. One mapping, so every surface reads the same state alike. */
-export function requestTone(state: string): PanelTone {
-  if (state === 'COMPLETED') return 'good';
-  if (state === 'DENIED' || state === 'FAILED' || state === 'TERMINATED_BUDGET' || state === 'EXPIRED') return 'risk';
-  if (state === 'DECLINED') return 'neutral';
-  if (state === 'ACCEPTED' || state === 'IN_FLIGHT' || state === 'QUEUED' || state === 'REDIRECTED') return 'info';
-  return 'warn';
-}
-
-/** Claim status → tone. DISPUTED/STALE are the two the Ledger surfaces as attention. */
-export function claimTone(status: string): PanelTone {
-  if (status === 'VERIFIED') return 'good';
-  if (status === 'DISPUTED') return 'risk';
-  if (status === 'STALE' || status === 'CANDIDATE') return 'warn';
-  return 'neutral';
-}
-
-/** Issue state → tone, over the board's own four columns. */
-export function issueTone(state: string): PanelTone {
-  if (state === 'DONE') return 'good';
-  if (state === 'IN PROGRESS') return 'info';
-  if (state === 'TO DO') return 'warn';
-  return 'neutral';
-}
+// The state → tone mappers and the tone → class map live in `components.ts`
+// with the StatusChip they feed; they are re-exported here so the surfaces that
+// already reach for them through this module keep working.
+export { claimTone, issueTone, requestTone };
 
 /** Minutes between an ISO timestamp and the server clock; null when unreadable. */
 function ageMinutes(from: string, at: string): number | null {
@@ -400,7 +378,7 @@ export function renderInspectorPanel(panel: InspectorPanel): string {
   return `<div class="vc-ins-head">
   <p class="vc-eyebrow">${esc(panel.kindLabel)}</p>
   <h2 class="vc-ins-title" tabindex="-1">${esc(panel.title)}</h2>
-  <p class="v-meta"><span class="v-mono">${esc(panel.recordId)}</span> · <span class="v-badge ${TONE_CLASS[panel.tone]}">${esc(panel.state)}</span></p>
+  <p class="v-meta"><span class="v-mono">${esc(panel.recordId)}</span> · ${statusChip(panel.state, { tone: panel.tone, dot: false })}</p>
 </div>
 <p class="vc-ins-summary">${esc(panel.summary)}</p>
 ${fields ? `<dl class="vc-ins-fields">${fields}</dl>` : ''}

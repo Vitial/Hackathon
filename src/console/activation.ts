@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { AsyncDb } from '../core/db.ts';
 import { memo } from '../core/request-cache.ts';
+import { statusChip, type Tone } from './components.ts';
 import type { Ledger } from '../ledger/ledger.ts';
 import type { Coordinator } from '../coord/coordinator.ts';
 import type { User } from '../core/auth.ts';
@@ -577,29 +578,30 @@ export async function seedSampleWalkthrough(
 }
 
 /**
- * Status is communicated by tint + text, never by color alone: every badge
- * carries its own label and a leading dot.
+ * Status is communicated by tint + text, never by color alone: the shared
+ * `statusChip` renders the label with a leading dot, and the tone only picks the
+ * tint. These maps were class names and are tones now — the chip owns the class.
  */
-const CHECK_TONE: Record<ChecklistStatus, string> = {
-  done: 'v-badge-good',
-  pending: 'v-badge-warn',
-  blocked: 'v-badge-risk',
+const CHECK_TONE: Record<ChecklistStatus, Tone> = {
+  done: 'good',
+  pending: 'warn',
+  blocked: 'risk',
 };
 
-const SOURCE_TONE: Record<SourceConnectionState, string> = {
-  unconfigured: 'v-badge',
-  disabled: 'v-badge',
-  syncing: 'v-badge-info',
-  empty: 'v-badge-warn',
-  delayed: 'v-badge-warn',
-  rate_limited: 'v-badge-info',
-  rejected: 'v-badge-risk',
-  failed: 'v-badge-risk',
-  ready: 'v-badge-good',
+const SOURCE_TONE: Record<SourceConnectionState, Tone> = {
+  unconfigured: 'neutral',
+  disabled: 'neutral',
+  syncing: 'info',
+  empty: 'warn',
+  delayed: 'warn',
+  rate_limited: 'info',
+  rejected: 'risk',
+  failed: 'risk',
+  ready: 'good',
 };
 
-function statusBadge(tone: string, label: string): string {
-  return `<span class="v-badge ${tone}"><span class="dot"></span>${esc(label)}</span>`;
+function statusBadge(tone: Tone, label: string): string {
+  return statusChip(label, { tone });
 }
 
 function renderSourceHealthCard(state: ActivationState): string {

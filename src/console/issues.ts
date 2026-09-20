@@ -1,6 +1,7 @@
 import type { AsyncDb } from '../core/db.ts';
 import { isSealed, openSecret, sealSecret, secretsKeyFromEnv } from '../core/secrets.ts';
 import { randomBytes } from 'node:crypto';
+import { issueTone, riskBadge, statusChip, type RiskLevel } from './components.ts';
 
 /**
  * The Issues board — an engineers-team-only kanban (image-5, huly.io style).
@@ -72,6 +73,18 @@ export interface IssueSnapshot {
   serverTime: string;
   /** True when rows were dropped because the client's watermark predates retention. */
   truncated: boolean;
+  /**
+   * The card assessment per issue, **already rendered**: `issueId → badge
+   * markup` (an empty string for a card with nothing to say).
+   *
+   * It rides on the snapshot rather than being computed in the view because the
+   * browser rebuilds a card after every sync: a badge is an assessment of *now*,
+   * so a card that was just moved to DONE has to lose one, and a card that has
+   * sat for another fortnight has to gain one, both without a page reload. Two
+   * implementations of that would be one too many — it is the drift this board
+   * has already been bitten by.
+   */
+  risk: Record<string, string>;
 }
 
 const COLUMN_LIMIT = 200;
@@ -123,11 +136,14 @@ export async function listIssues(db: AsyncDb, tenant: string): Promise<IssueSnap
        WHERE c.tenant = ? ORDER BY c.created_at DESC LIMIT ?`,
     )
     .all(tenant, COMMENT_LIMIT)) as Record<string, unknown>[];
+  const issues = rows.map(rowToIssue);
+  const serverTime = new Date().toISOString();
   return {
-    issues: rows.map(rowToIssue),
+    issues,
     comments: commentRows.reverse().map(rowToComment),
-    serverTime: new Date().toISOString(),
+    serverTime,
     truncated: rows.length >= COLUMN_LIMIT * ISSUE_STATES.length,
+    risk: riskMap(issues, serverTime),
   };
 }
 
@@ -150,11 +166,13 @@ export async function syncIssues(db: AsyncDb, tenant: string, since: string | nu
        WHERE c.tenant = ? AND c.created_at >= ? ORDER BY c.created_at DESC LIMIT ?`,
     )
     .all(tenant, since, COMMENT_LIMIT)) as Record<string, unknown>[];
+  const issues = rows.map(rowToIssue);
   return {
-    issues: rows.map(rowToIssue),
+    issues,
     comments: commentRows.reverse().map(rowToComment),
     serverTime: nowIso,
     truncated,
+    risk: riskMap(issues, nowIso),
   };
 }
 
@@ -1027,15 +1045,26 @@ const LABEL_CLASS: Record<string, string> = {
   Feature: 'iss-pill iss-label-feature',
 };
 
-// State colours are semantic tokens, not a private palette: amber = waiting,
-// faint = parked, blue = moving, green = finished. Same names as every other
-// surface, so dark mode needs no second table.
-const STATE_DOT: Record<IssueState, string> = {
-  BACKLOG: 'var(--v-hypo)',
-  'TO DO': 'var(--v-faint)',
-  'IN PROGRESS': 'var(--v-pred)',
-  DONE: 'var(--v-fact)',
-};
+/**
+ * The board's state chip: the shared StatusChip, toned by the shared issue map.
+ *
+ * This replaced a private state → colour table (`.iss-dot` / `.iss-row-status`).
+ * The kanban keeps its own chrome — columns, cards, drag, and the priority and
+ * label pills that are not states — and gives up its own answer to "what colour
+ * is IN PROGRESS", which was the fourth place in the console answering it.
+ */
+function issueStateChip(state: IssueState): string {
+  return statusChip(state, { tone: issueTone(state) });
+}
+
+/**
+ * The chips as markup, handed to the board's script. The live re-render splices
+ * the server's own chip rather than carrying a second copy of its shape — the
+ * two list-row builders already disagree about everything else they draw.
+ */
+const STATE_CHIP: Record<IssueState, string> = Object.fromEntries(
+  ISSUE_STATES.map((state) => [state, issueStateChip(state)]),
+) as Record<IssueState, string>;
 
 // Six distinguishable identities that all come from the token set — enough to
 // tell people apart at a glance without introducing a rainbow the rest of the
@@ -1124,7 +1153,12 @@ function repoBadgeHtml(repo: string): string {
   </span>`;
 }
 
-function issueCard(issue: IssueRow, comments: IssueCommentRow[]): string {
+/**
+ * One card. `riskHtml` is the assessment the snapshot already made for this
+ * issue, passed in rather than recomputed so that the card the server renders
+ * and the card the browser rebuilds from a sync are the same card.
+ */
+function issueCard(issue: IssueRow, comments: IssueCommentRow[], riskHtml = ''): string {
   const count = comments.filter((c) => c.issueId === issue.id).length;
   const pills = [
     issue.priority !== 'No priority'
@@ -1170,6 +1204,7 @@ function issueCard(issue: IssueRow, comments: IssueCommentRow[]): string {
 
   return `<article class="iss-card" draggable="true" data-id="${esc(issue.id)}" data-updated-at="${esc(issue.updatedAt)}" data-assignee="${esc(issue.assigneeEmail ?? '')}" tabindex="0" aria-label="${esc(issue.title)}">
   ${previewHtml}
+  ${riskHtml ? `<div class="iss-card-risk">${riskHtml}</div>` : ''}
   <div class="iss-title">${esc(issue.title)}</div>
   ${pills ? `<div class="iss-pills">${pills}</div>` : ''}
   ${progressHtml || repoHtml ? `<div class="iss-progress-row">${progressHtml}${repoHtml}</div>` : ''}
@@ -1212,10 +1247,99 @@ function extractEstimate(issue: { description?: string }): string | null {
   return null;
 }
 
+/**
+ * The due date as the author wrote it, or null.
+ *
+ * The separators are in the class on purpose: without them `due: 2026-09-18`
+ * matched only `2026`, so the card showed a year where the author wrote a day —
+ * and the risk assessment below would have read that year as 1 January.
+ */
 function extractDueDate(issue: { description?: string }): string | null {
-  const m = String(issue.description || '').match(/(?:due|deadline):\s*([0-9a-zA-Z\s]+)/i);
+  const m = String(issue.description || '').match(/(?:due|deadline):\s*([0-9a-zA-Z\s:./-]+)/i);
   if (m && m[1]) return m[1].trim();
   return null;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * How long a card may sit without an update before the board calls it stalled.
+ *
+ * Two weeks: long enough that a fortnight is not just a queue position, short
+ * enough that the card is still worth chasing when it is called.
+ */
+const STALL_DAYS = 14;
+
+/**
+ * A due date as an instant, or `null` when it cannot be read honestly.
+ *
+ * A due date is free text inside the issue's own description (`due: 2026-09-30`),
+ * so anything without a year is refused: `Date.parse('Sep 30')` answers 2001 — a
+ * perfectly valid number, and a number is all it would take for every undated
+ * card to claim it was overdue in 2001.
+ */
+function dueInstant(issue: { description?: string }): number | null {
+  const raw = extractDueDate(issue);
+  if (!raw || !/\d{4}/.test(raw)) return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export interface IssueRisk {
+  level: RiskLevel;
+  label: string;
+  reasons: string[];
+}
+
+/**
+ * What the board says about a card that the card's own state cannot: it is late,
+ * or nobody has touched it.
+ *
+ * A **finished** card is neither. A due date in the past on a DONE card is a
+ * record of how the work went, not something to chase, which is exactly why this
+ * is an assessment over the state and not another state: `riskBadge` and
+ * `statusChip` answer different questions, and a card can be DONE and overdue.
+ */
+export function issueRisk(issue: IssueRow, now: string): IssueRisk[] {
+  if (issue.state === 'DONE') return [];
+  const at = Date.parse(now);
+  if (!Number.isFinite(at)) return [];
+
+  const out: IssueRisk[] = [];
+  const due = dueInstant(issue);
+  if (due !== null && due < at) {
+    const days = Math.max(1, Math.round((at - due) / DAY_MS));
+    out.push({
+      level: 'watch',
+      label: `overdue ${days}d`,
+      reasons: [`Due ${extractDueDate(issue) ?? ''} — ${days} day(s) ago`],
+    });
+  }
+
+  const updated = Date.parse(issue.updatedAt);
+  if (Number.isFinite(updated) && at - updated > STALL_DAYS * DAY_MS) {
+    out.push({
+      level: 'blocked',
+      label: 'stalled',
+      reasons: [`No update in ${Math.floor((at - updated) / DAY_MS)} days`],
+    });
+  }
+  return out;
+}
+
+/** The assessment above, rendered — one place, so a served card and a synced
+ * card cannot disagree about whether the same card is stalled. */
+function issueRiskHtml(issue: IssueRow, now: string): string {
+  return issueRisk(issue, now)
+    .map((r) => riskBadge(r.level, { label: r.label, reasons: r.reasons }))
+    .join('');
+}
+
+/** `issueId → rendered badges`, the shape the snapshot and the board script share. */
+function riskMap(issues: readonly IssueRow[], now: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const issue of issues) out[issue.id] = issueRiskHtml(issue, now);
+  return out;
 }
 
 function extractMilestone(issue: { description?: string; labels?: string[] }): string | null {
@@ -1263,16 +1387,6 @@ function prioritySignalSvg(priority: IssuePriority): string {
   </span>`;
 }
 
-function statusIndicatorSvg(state: IssueState, progress: number): string {
-  const color = STATE_DOT[state] || 'var(--v-faint)';
-  return `<span class="iss-row-status" title="${esc(state)}">
-    <svg width="15" height="15" viewBox="0 0 16 16">
-      <circle cx="8" cy="8" r="6" fill="none" stroke="${color}" stroke-width="2"/>
-      ${progress > 0 ? `<circle cx="8" cy="8" r="3" fill="${color}"/>` : ''}
-    </svg>
-  </span>`;
-}
-
 function issueListRow(
   issue: IssueRow,
   comments: IssueCommentRow[],
@@ -1282,6 +1396,8 @@ function issueListRow(
    * renderer, two honest behaviours, decided by the caller.
    */
   inspectHrefFor?: (issueId: string) => string,
+  /** The assessment the snapshot made, rendered — the same map the cards use. */
+  riskHtml = '',
 ): string {
   const count = comments.filter((c) => c.issueId === issue.id).length;
   const key = formatIssueKey(issue);
@@ -1336,7 +1452,8 @@ function issueListRow(
   <div class="iss-row-left">
     ${prioritySignalSvg(issue.priority)}
     <span class="iss-row-key">${esc(key)}</span>
-    ${statusIndicatorSvg(issue.state, issue.progress)}
+    ${issueStateChip(issue.state)}
+    ${riskHtml}
     ${titleHtml}
   </div>
   <div class="iss-row-right">
@@ -1356,6 +1473,7 @@ function renderIssuesList(
   byState: Map<IssueState, IssueRow[]>,
   comments: IssueCommentRow[],
   inspectHrefFor?: (issueId: string) => string,
+  risk: Record<string, string> = {},
 ): string {
   const listStates: IssueState[] = ['IN PROGRESS', 'TO DO', 'BACKLOG', 'DONE'];
   return listStates
@@ -1364,13 +1482,12 @@ function renderIssuesList(
       return `<div class="iss-list-group" data-state="${esc(state)}">
       <div class="iss-list-group-header" role="button" tabindex="0" aria-expanded="true">
         <span class="iss-list-chevron">▼</span>
-        <span class="iss-dot" style="background:${STATE_DOT[state]}"></span>
-        <span class="iss-list-group-title">${esc(state)}</span>
+        <span class="iss-list-group-title">${issueStateChip(state)}</span>
         <span class="iss-col-dash">—</span>
         <span class="iss-list-group-count">${issues.length}</span>
       </div>
       <div class="iss-list-rows" data-state="${esc(state)}">
-        ${issues.map((i) => issueListRow(i, comments, inspectHrefFor)).join('\n')}
+        ${issues.map((i) => issueListRow(i, comments, inspectHrefFor, risk[i.id] ?? '')).join('\n')}
       </div>
     </div>`;
     })
@@ -1380,8 +1497,7 @@ function renderIssuesList(
 function columnHeader(state: IssueState, issues: IssueRow[]): string {
   const count = issues.length;
   return `<header class="iss-col-head">
-  <span class="iss-dot" style="background:${STATE_DOT[state]}"></span>
-  <h2 class="iss-col-title">${esc(state)}</h2>
+  <h2 class="iss-col-title">${issueStateChip(state)}</h2>
   <span class="iss-col-dash">—</span>
   <span class="iss-col-count">${count}</span>
   <span class="iss-col-dots" aria-hidden="true">···</span>
@@ -1447,7 +1563,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   ${columnHeader(state, issues)}
   <button type="button" class="iss-add" data-state="${esc(state)}" title="New issue in ${esc(state)}" aria-label="New issue in ${esc(state)}">+</button>
   <div class="iss-cards" data-state="${esc(state)}">
-    ${issues.map((i) => issueCard(i, data.comments)).join('\n')}
+    ${issues.map((i) => issueCard(i, data.comments, data.risk[i.id] ?? '')).join('\n')}
   </div>
 </section>`;
   }).join('\n');
@@ -1481,8 +1597,11 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   .iss-columns { display:flex; gap:16px; align-items:flex-start; overflow-x:auto; padding-bottom:18px; }
   .iss-col { flex:0 0 295px; min-width:280px; max-width:320px; background:var(--v-bg-2); border:1px solid var(--v-line); border-radius:var(--radius-lg); padding:12px 10px 14px; }
   .iss-col-head { display:flex; align-items:center; gap:7px; padding:4px 6px 10px; }
-  .iss-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-  .iss-col-title { font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--v-ink); margin:0; }
+  /* The head now holds a status chip, which is not a heading's text: the chip
+     carries its own size, weight and colour, and must not inherit the board's
+     uppercase or tracking. */
+  .iss-col-title { margin:0; }
+  .iss-col-title .v-badge, .iss-list-group-header .v-badge { text-transform:none; letter-spacing:0; }
   .iss-col-dash { font-size:11.5px; color:var(--v-faint); font-weight:400; }
   .iss-col-count { font-size:12px; font-weight:600; color:var(--v-muted); }
   .iss-col-dots { margin-left:auto; color:var(--v-faint); font-size:16px; font-weight:bold; cursor:pointer; padding:0 4px; border-radius:4px; line-height:1; }
@@ -1492,6 +1611,9 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   .iss-cards { display:flex; flex-direction:column; gap:10px; min-height:60px; }
   .iss-cards.iss-dragover { background:var(--v-accent-dim); outline:2px dashed var(--v-accent); outline-offset:-2px; border-radius:var(--radius-md); }
   .iss-card { background:var(--v-bg-1); border:1px solid var(--v-line); border-radius:var(--radius-md); padding:13px 13px 11px; cursor:grab; box-shadow:var(--v-card-shadow); transition:border-color 0.15s var(--ease-out),box-shadow 0.15s var(--ease-out),transform 0.12s var(--ease-out); }
+  /* The card's assessment row. Above the title: "this is late" is read before the
+     title, not after it. */
+  .iss-card-risk { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 7px; }
   .iss-card:hover { border-color:var(--v-line-strong); box-shadow:var(--v-card-shadow-hover); transform:translateY(-1px); }
   .iss-card.iss-dragging { opacity:0.55; cursor:grabbing; transform:scale(0.98); }
   .iss-card:focus-visible { outline:2px solid var(--v-focus); outline-offset:1px; }
@@ -1530,12 +1652,11 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   .iss-list-container { background:var(--v-bg-1); border:1px solid var(--v-line); border-radius:var(--radius-lg); box-shadow:var(--v-card-shadow); overflow:hidden; margin-bottom:20px; }
   .iss-list-group { border-bottom:1px solid var(--v-line); }
   .iss-list-group:last-child { border-bottom:none; }
-  .iss-list-group-header { display:flex; align-items:center; gap:8px; padding:10px 16px; background:var(--v-bg-2); border-bottom:1px solid var(--v-line); cursor:pointer; user-select:none; font-size:12px; font-weight:700; color:var(--v-ink-2); letter-spacing:0.04em; }
+  .iss-list-group-header { display:flex; align-items:center; gap:8px; padding:10px 16px; background:var(--v-bg-2); border-bottom:1px solid var(--v-line); cursor:pointer; user-select:none; font-size:12px; font-weight:700; color:var(--v-ink-2); }
   .iss-list-group-header:hover { background:var(--v-bg-3); color:var(--v-ink); }
   .iss-list-chevron { font-size:9px; color:var(--v-faint); transition:transform 0.15s var(--ease-out); width:12px; display:inline-block; }
   .iss-list-group.collapsed .iss-list-chevron { transform:rotate(-90deg); }
   .iss-list-group.collapsed .iss-list-rows { display:none; }
-  .iss-list-group-title { text-transform:uppercase; }
   .iss-list-group-count { font-size:11.5px; font-weight:600; color:var(--v-muted); }
   
   .iss-list-row { display:flex; align-items:center; justify-content:space-between; padding:9px 16px; border-bottom:1px solid var(--v-line); transition:background 0.12s var(--ease-out); cursor:pointer; gap:12px; }
@@ -1546,7 +1667,6 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   .iss-row-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
   .iss-row-signal { display:inline-grid; place-items:center; flex-shrink:0; }
   .iss-row-key { font-size:12px; font-weight:600; color:var(--v-muted); font-family:var(--font-mono); min-width:65px; flex-shrink:0; }
-  .iss-row-status { display:inline-grid; place-items:center; flex-shrink:0; }
   .iss-row-title { font-size:13.5px; font-weight:500; color:var(--v-ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
   .iss-list-row:hover .iss-row-title { color:var(--v-accent); }
   /* The title is the row's inspector trigger: a real link, styled as the text
@@ -1622,7 +1742,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
 
   <!-- List View (Table / Grouped by State) -->
   <div class="iss-list-container" id="iss-list-container"${view === 'board' ? ' style="display:none;"' : ''}>
-    ${renderIssuesList(byState, data.comments, inspectHrefFor)}
+    ${renderIssuesList(byState, data.comments, inspectHrefFor, data.risk)}
   </div>
 
   <!-- New-issue dialog -->
@@ -1740,7 +1860,10 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   var LABEL_CLASS = ${JSON.stringify(LABEL_CLASS)};
   var PRIORITIES = ${JSON.stringify(ISSUE_PRIORITIES)};
   var STATES = ${JSON.stringify(ISSUE_STATES)};
-  var STATE_DOT = ${JSON.stringify(STATE_DOT)};
+  var STATE_CHIP = ${JSON.stringify(STATE_CHIP)};
+  // Replaced wholesale on every sync response: an assessment is of *now*, and
+  // the same map the server rendered this page's cards from.
+  var ISSUE_RISK = ${JSON.stringify(data.risk)};
   window.__issCommentCounts = ${JSON.stringify(initialCommentCounts)};
 
   function updateCommentCountBadges(issueId, newCount) {
@@ -1834,7 +1957,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   }
 
   function extractDueDateClient(issue) {
-    var m = String(issue.description || '').match(/(?:due|deadline):[ \t]*([0-9a-zA-Z \t]+)/i);
+    var m = String(issue.description || '').match(/(?:due|deadline):[ \t]*([0-9a-zA-Z \t:./-]+)/i);
     return (m && m[1]) ? m[1].trim() : null;
   }
 
@@ -1870,16 +1993,6 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
         '<rect x="2" y="11" width="2" height="3" rx="0.5" fill="' + (pLevel >= 1 ? color : empty) + '" />' +
         '<rect x="6" y="8" width="2" height="6" rx="0.5" fill="' + (pLevel >= 2 ? color : empty) + '" />' +
         '<rect x="10" y="5" width="2" height="9" rx="0.5" fill="' + (pLevel >= 3 ? color : empty) + '" />' +
-      '</svg>' +
-    '</span>';
-  }
-
-  function statusIndicatorSvgClient(state, progress) {
-    var color = STATE_DOT[state] || 'var(--v-faint)';
-    return '<span class="iss-row-status" title="' + escHtml(state) + '">' +
-      '<svg width="15" height="15" viewBox="0 0 16 16">' +
-        '<circle cx="8" cy="8" r="6" fill="none" stroke="' + color + '" stroke-width="2"/>' +
-        (progress > 0 ? '<circle cx="8" cy="8" r="3" fill="' + color + '"/>' : '') +
       '</svg>' +
     '</span>';
   }
@@ -1962,6 +2075,9 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   }
 
   function cardHtml(issue, commentCount) {
+    // The assessment the server already made for this issue, from the map the
+    // sync response just replaced — never a second rule for staleness.
+    var riskHtml = ISSUE_RISK[issue.id] || '';
     var pills = '';
     if (issue.priority && issue.priority !== 'No priority') {
       pills += '<span class="' + (PRIORITY_CLASS[issue.priority] || 'iss-pill iss-priority-none') + '">' + escHtml(issue.priority) + '</span>';
@@ -2004,6 +2120,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
 
     return '<article class="iss-card" draggable="true" data-id="' + escHtml(issue.id) + '" data-updated-at="' + escHtml(issue.updatedAt) + '" data-assignee="' + escHtml(issue.assigneeEmail || '') + '" tabindex="0" aria-label="' + escHtml(issue.title) + '">' +
       previewHtml +
+      (riskHtml ? '<div class="iss-card-risk">' + riskHtml + '</div>' : '') +
       '<div class="iss-title">' + escHtml(issue.title) + '</div>' +
       (pills ? '<div class="iss-pills">' + pills + '</div>' : '') +
       ((progressHtml || repoHtml) ? '<div class="iss-progress-row">' + progressHtml + repoHtml + '</div>' : '') +
@@ -2068,7 +2185,8 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       '<div class="iss-row-left">' +
         prioritySignalSvgClient(issue.priority) +
         '<span class="iss-row-key">' + escHtml(key) + '</span>' +
-        statusIndicatorSvgClient(issue.state, issue.progress || 0) +
+        (STATE_CHIP[issue.state] || '') +
+        (ISSUE_RISK[issue.id] || '') +
         '<a class="iss-row-title" href="' + escHtml(inspectHrefFor(issue.id)) + '" data-inspect="issue:' + escHtml(issue.id) + '">' + escHtml(issue.title) + '</a>' +
       '</div>' +
       '<div class="iss-row-right">' +
@@ -2143,6 +2261,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       .then(function (data) {
         if (!data || !data.ok || !data.snapshot) return;
         watermark = data.snapshot.serverTime || watermark;
+        ISSUE_RISK = data.snapshot.risk || {};
         (data.snapshot.issues || []).forEach(function (issue) {
           if (window.__issCommentCounts) window.__issCommentCounts[issue.id] = window.__issCommentCounts[issue.id] || 0;
           upsertCard(issue);

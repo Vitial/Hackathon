@@ -5,6 +5,8 @@ import type { Coordinator } from '../coord/coordinator.ts';
 import type { CoordinationRequest } from '../core/types.ts';
 import { claimOutbox, settleOutbox, type OutboxRow } from './scheduler.ts';
 import { JcodeAdapter, LocalEchoAdapter, type HarnessAdapter } from './harness.ts';
+import { DshAdapter } from '../dsh/adapter.ts';
+import type { DshClientOptions } from '../dsh/client.ts';
 import { requiresHumanApproval, validateExecutionAgainstSpec, type ExecutionSpec } from '../coord/execution-spec.ts';
 import { enqueueExecutorJob, runJob, type ExecutorJob } from '../aws/executor.ts';
 import { CognitiveRouter } from '../router/router.ts';
@@ -26,6 +28,12 @@ export interface ApplicationWorkerOptions {
   dispatchRequests?: boolean;
   relayOutbox?: boolean;
   jcodeSocketPath?: string;
+  /**
+   * Select the dsh (deepseek-harness SDK) adapter. Takes precedence over
+   * `jcodeSocketPath` when set; unset leaves the jcode → local-echo path
+   * unchanged. Built via `dshClientOptionsFromEnv()` (DSH_ENABLED=1).
+   */
+  dsh?: DshClientOptions;
   adapter?: HarnessAdapter;
   signal?: AbortSignal;
   outboxHandler?: (row: OutboxRow) => Promise<void>;
@@ -211,6 +219,8 @@ export class ApplicationWorker {
 
     if (options.adapter) {
       this.adapter = options.adapter;
+    } else if (options.dsh) {
+      this.adapter = new DshAdapter(this.db, this.ledger, this.coord, options.dsh);
     } else if (options.jcodeSocketPath) {
       this.adapter = new JcodeAdapter(this.db, this.ledger, this.coord, { socketPath: options.jcodeSocketPath });
     } else {

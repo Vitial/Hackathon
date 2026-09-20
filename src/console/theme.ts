@@ -261,6 +261,10 @@ img,svg{max-width:100%}
 .v-grid-wide{display:grid;gap:16px;grid-template-columns:minmax(0,2fr) minmax(0,1fr)}
 @media (max-width:1100px){.v-grid-wide{grid-template-columns:minmax(0,1fr)}}
 .v-split{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.section-head{align-items:flex-start;margin:0 0 10px}
+.section-head .v-sub{max-width:78ch;line-height:1.55;margin:6px 0 0}
+.section-head--risk .v-card-title{color:var(--v-tint-risk-ink)}
+.section-head-action{flex-shrink:0}
 .v-divider{height:1px;background:var(--v-line);border:0;margin:0}
 /* ------------------------------------------------------------------ surfaces */
 .v-card{background:var(--v-bg-1)!important;border:1px solid var(--v-line)!important;border-radius:var(--radius-card);box-shadow:var(--v-card-shadow);padding:20px 22px;backdrop-filter:var(--v-glass-blur);-webkit-backdrop-filter:var(--v-glass-blur)}
@@ -285,6 +289,9 @@ img,svg{max-width:100%}
 /* --------------------------------------------------------------------- chips */
 .v-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:var(--radius-pill);border:1px solid var(--v-line);background:var(--v-bg-1);color:var(--v-ink-2);white-space:nowrap;line-height:1.4}
 .v-badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0}
+/* The dense variant, for a settings row or a table cell. Same chip, tighter — a
+   surface that needs a smaller chip passes size: sm and does not build one. */
+.v-badge-sm{font-size:11px;padding:2px 8px}
 .v-badge-good{background:var(--v-tint-good-bg);color:var(--v-tint-good-ink);border-color:transparent}
 .v-badge-warn{background:var(--v-tint-warn-bg);color:var(--v-tint-warn-ink);border-color:transparent}
 .v-badge-risk{background:var(--v-tint-risk-bg);color:var(--v-tint-risk-ink);border-color:transparent}

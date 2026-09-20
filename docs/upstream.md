@@ -1,7 +1,8 @@
 # Upstream pins — verify the identifier, not the name
 
-Cloned under `.upstream/` (gitignored, never enters our history).
-Absorbed code additionally records its SHA per-file in provenance headers;
+Cloned under `.upstream/` (gitignored, never enters our history), or
+vendored in-tree under `vendor/` (committed, editable fork). Absorbed code
+additionally records its SHA per-file in provenance headers;
 `LICENSE-THIRD-PARTY.md` is the binding record.
 
 | Repo | Clone URL | Pinned SHA | Date | Why |
@@ -9,6 +10,7 @@ Absorbed code additionally records its SHA per-file in provenance headers;
 | QM | `https://github.com/yc-software/qm` | `60ba79195dc84aa85a23f238749656e11c88696c` | 2026-09-08 | absorb-from source (leaf modules only, MIT) |
 | Buzz | `https://github.com/block/buzz.git` | `218633b8fd6ee41aee8eb18ba9806e8d90694751` | 2026-09-08 | talk-layer surface (Apache-2.0) |
 | jcode (real) | `https://github.com/1jehuang/jcode` | `e65e47c31af2ab79346458ff1511bea533930b59` | 2026-09-09 | Rust harness API we drive (MIT v0.84.0) |
+| deepseek-harness | `https://github.com/deepseek-ai/deepseek-harness` | `ddefc45fbc7f8e46dd73185e68295696d1297887` | 2026-09-20 | **In-tree vendored fork** at `vendor/deepseek-harness/` (MIT). Whole monorepo committed for direct modification. 15 symlinks materialized as regular copies (Windows compat). Replaces 1jehuang/jcode as the harness runtime. |
 | TDAM | `https://github.com/TencentCloud/TencentDB-Agent-Memory` | `8f2dc830317934e54548472bf62c5999f9bb1202` | 2026-09-15 | read-only reference for the §29 moat-scope correction (MIT, LICENSE text verified). **No code absorbed, no dependency — so no `LICENSE-THIRD-PARTY.md` row.** |
 
 Name-collision warning: `cnjack/jcode` is a **different, Go** project that
@@ -43,6 +45,16 @@ differently:
   process. Fork only if the API itself is insufficient (missing
   capability we can name), because a fork means building and shipping
   Rust binaries per platform. Same separate-fork-repo rule as Buzz.
+  **Superseded by deepseek-harness** (2026-09-20): jcode removed from
+  prod; code remains in `src/jcode/` until the dsh adapter is proven.
+- **deepseek-harness — fork in place.** The whole monorepo is vendored
+  at `vendor/deepseek-harness/` (pinned SHA above). We modify it directly
+  to fit Vital's architecture (approval round-trip, cost ceilings, cancel).
+  "Rebase" = fetch upstream, diff against our pinned SHA, assess merge
+  debt, and cherry-pick or merge as needed. Cadence: when we need an
+  upstream feature, or monthly — not floating. Our own Cordis plugins
+  (approval answerer, usage/budget) live in `src/substrate/dsh-plugins/`
+  outside the vendor tree and are mounted via the SDK's patch mechanism.
 - **TDAM — read, never absorb.** Assessed 2026-09-15 for the §29 moat-scope
   correction (`idea.md` §29): do not depend on it, do not absorb it. The
   clone exists so the assessment stays re-checkable against the pinned
@@ -53,11 +65,12 @@ In all three cases: no silent drift. A rebase that changes vendored
 semantics updates headers, pins, and the tests that prove the semantics
 — `npm run verify:provenance` fails the build otherwise.
 
-## Velocity note (2026-09-09)
+## Velocity note (2026-09-20)
 
 Buzz shows ~1.5k open issues / ~2k open PRs; QM and Buzz both moved within
 a day of our Sept 8 pins (verified live with `scripts/upstream-drift.mjs`;
-jcode in sync). Consequences:
+jcode in sync). deepseek-harness is newer (created 2026-08-13, 231k stars)
+and developer-preview with breaking changes — monitor closely. Consequences:
 
 1. Pins, not floating — re-checked by the weekly drift workflow. Rebase
    monthly or when we need an upstream fix, never continuously.

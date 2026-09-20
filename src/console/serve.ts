@@ -138,6 +138,15 @@ import {
 } from './render.ts';
 import { renderDigest, digestWindowSince, type DigestDays } from './digest.ts';
 import {
+  accountTone,
+  configSourceTone,
+  errorState,
+  invitationTone,
+  readinessTone,
+  skillCardTone,
+  statusChip,
+} from './components.ts';
+import {
   DEFAULT_THEME,
   THEME_TOGGLE_MARKER,
   THEME_TOGGLE_SCRIPT,
@@ -936,7 +945,13 @@ function loginPage(
     ? `<p class="sub"><strong>${esc(reauthResume(opts.next).notice)}</strong> You will return to your task after signing in.</p>`
     : '';
   const errorBlock = opts.error
-    ? `<div class="error-summary" role="alert" tabindex="-1" data-error-summary><p><strong>Sign in failed.</strong></p><ul><li><a href="#email">${esc(opts.error)}</a> Your email is preserved. Check the highlighted field and try again.</li></ul></div>`
+    ? errorState({
+        title: 'Sign in failed.',
+        items: [
+          `<a href="#email">${esc(opts.error)}</a> Your email is preserved. Check the highlighted field and try again.`,
+        ],
+        summary: true,
+      })
     : '';
   return page(
     'Vital Console: sign in',
@@ -995,7 +1010,7 @@ function forgotPasswordPage(csrf: string, opts: { error?: string; notice?: strin
     `<h1>Reset your password</h1>
 ${mailerNote}
 ${opts.notice ? `<div class="success" role="status"><p class="sub"><strong>${esc(opts.notice)}</strong></p></div>` : ''}
-${opts.error ? `<div class="error-summary" role="alert"><p class="err">${esc(opts.error)}</p></div>` : ''}
+${opts.error ? errorState({ title: opts.error }) : ''}
 <form method="post" action="/forgot-password">
   <input type="hidden" name="csrf" value="${esc(csrf)}">
   ${nextField}
@@ -1113,7 +1128,10 @@ function accountPage(
   const nav = accountNav('account')
     .map((item) => {
       if (item.active) {
-        return `<span class="v-badge v-badge-good" aria-current="page">${esc(item.label)}</span>`;
+        // The current tab, as the shared chip: this was the last place a tone
+        // class was written out by hand, which is why the guard in
+        // `test/tokens.test.ts` can now be absolute.
+        return statusChip(item.label, { tone: 'good', attrs: 'aria-current="page"' });
       }
       return `<a href="${esc(item.href)}" class="v-btn v-btn-ghost v-btn-sm">${esc(item.label)}</a>`;
     })
@@ -1123,9 +1141,9 @@ function accountPage(
   const emailStatus = ((): string => {
     if (extra.emailVerified === undefined) return '';
     if (extra.emailVerified) {
-      return `<div style="display:flex;align-items:center;gap:10px;margin-top:6px;"><span class="v-badge v-badge-good"><span class="dot"></span>Email verified</span><span class="v-meta">This address may be used for recovery.</span></div>`;
+      return `<div style="display:flex;align-items:center;gap:10px;margin-top:6px;">${statusChip('Email verified', { tone: 'good' })}<span class="v-meta">This address may be used for recovery.</span></div>`;
     }
-    const badge = `<span class="v-badge v-badge-warn"><span class="dot"></span>Email not yet verified</span>`;
+    const badge = statusChip('Email not yet verified', { tone: 'warn' });
     const action = `<form method="post" action="/account/email/request" style="display:inline"><input type="hidden" name="csrf" value="${esc(csrf)}"><button type="submit" class="v-btn v-btn-sm v-btn-secondary" style="min-height:auto;">Request operator verification</button></form>`;
     const hint = `Automatic email delivery is not configured on this host. Ask your system operator to generate your verification link with <code class="v-mono" style="font-size:12px;background:var(--v-bg-2);padding:2px 6px;border-radius:4px;">vital verify-link --tenant ${esc(user.tenant)} --email ${esc(user.email)}</code> (turnaround: typically same-day).`;
     return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;">${badge}${action}</div>
@@ -1142,7 +1160,7 @@ function accountPage(
           (f) =>
             `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--v-line)">
   <div style="display:flex;align-items:center;gap:10px;">
-    <span class="v-badge v-badge-good" style="font-size:11px;"><span class="dot"></span>${esc(f.kind.toUpperCase())}</span>
+    ${statusChip(f.kind.toUpperCase(), { tone: 'good' })}
     <span class="v-meta">Added ${esc(new Date(f.verifiedAt).toLocaleDateString())}${f.lastUsedAt ? ` · Last used ${esc(new Date(f.lastUsedAt).toLocaleDateString())}` : ''}</span>
   </div>
   <form method="post" action="/account/mfa/remove"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="factorId" value="${esc(f.id)}"><button type="submit" class="v-btn v-btn-sm v-btn-ghost" style="color:var(--v-risk);">Remove</button></form>
@@ -1151,7 +1169,7 @@ function accountPage(
         .join('');
       return `<div class="v-stack-sm">
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-    <span class="v-badge v-badge-good"><span class="dot"></span>Enabled</span>
+    ${statusChip('Enabled', { tone: 'good' })}
     <span class="v-meta">${extra.mfa.factors.length} factor(s) · ${extra.mfa.recoveryCount} unused recovery code(s)</span>
   </div>
   ${factorList}
@@ -1197,7 +1215,7 @@ function accountPage(
   </div>
 
   ${notice ? `<div class="success" style="margin:0;">${esc(notice)}</div>` : ''}
-  ${error ? `<div class="error-summary" style="margin:0;">${esc(error)}</div>` : ''}
+  ${error ? errorState({ title: error }) : ''}
 
   <!-- Identity card -->
   <div class="v-card">
@@ -1209,7 +1227,7 @@ function accountPage(
           <div class="v-meta">${esc(user.email)}</div>
         </div>
       </div>
-      <span class="v-badge">${esc(user.role)}</span>
+      ${statusChip(user.role)}
     </div>
     ${emailStatus}
   </div>
@@ -1462,19 +1480,16 @@ async function serveStatic(
   }
 }
 
+// The two halves of a membership: the account's state and an outstanding
+// invitation's. Both are the shared chip now, toned by the shared ladders, so the
+// team table and the account page cannot read "pending activation" two ways.
 function statusLabel(user: User): string {
   const s = membershipStatus(user);
-  if (s === 'disabled') return '<span class="v-badge v-badge-risk"><span class="dot"></span>disabled</span>';
-  if (s === 'pending_activation')
-    return '<span class="v-badge v-badge-warn"><span class="dot"></span>pending activation</span>';
-  return '<span class="v-badge v-badge-good"><span class="dot"></span>active</span>';
+  return statusChip(s === 'pending_activation' ? 'pending activation' : s, { tone: accountTone(s) });
 }
 
 function invitationLabel(inv: Invitation): string {
-  if (inv.status === 'pending') return '<span class="v-badge v-badge-info"><span class="dot"></span>invited</span>';
-  if (inv.status === 'expired') return '<span class="v-badge v-badge-risk"><span class="dot"></span>expired</span>';
-  if (inv.status === 'revoked') return '<span class="v-badge v-badge-risk"><span class="dot"></span>revoked</span>';
-  return '<span class="v-badge v-badge-good"><span class="dot"></span>accepted</span>';
+  return statusChip(inv.status === 'pending' ? 'invited' : inv.status, { tone: invitationTone(inv.status) });
 }
 
 /** An admin (or the owner) may disable a member; nobody disables an owner but the owner, or themselves. */
@@ -1995,8 +2010,8 @@ function stopsSection(
         <h2 class="v-card-title">Emergency stops</h2>
         ${
           stops.length > 0
-            ? `<span class="v-badge v-badge-risk"><span class="dot"></span>${stops.length} active</span>`
-            : `<span class="v-badge v-badge-good"><span class="dot"></span>Normal</span>`
+            ? statusChip(`${stops.length} active`, { tone: 'risk' })
+            : statusChip('Normal', { tone: 'good' })
         }
       </div>
       <p class="sub" style="margin:6px 0 0;font-size:13px;max-width:78ch;line-height:1.5;">A stop denies new authorizations at once and never force-terminates work already executing. Recovery is audited with a recorded reason; a restart does not clear a stop.</p>
@@ -2057,15 +2072,12 @@ function governanceSection(policy?: {
   const rows = SETTINGS_INVENTORY.map((entry) => {
     const impact = changeImpact(entry.key);
     const src = sourceOf.get(entry.key) ?? 'default';
-    const badge = (tone: string, label: string) =>
-      `<span class="v-badge${tone}" style="font-size:11px;padding:2px 8px;">${esc(label)}</span>`;
-    let srcBadge: string;
-    if (src === 'startup') srcBadge = badge(' v-badge-warn', 'startup');
-    else if (src === 'runtime') srcBadge = badge(' v-badge-info', 'runtime');
-    else srcBadge = badge('', src);
+    // The label is the source itself (`startup`, `runtime`, `default`); the tone
+    // comes from the shared map rather than a class suffix passed as a string.
+    const srcBadge = statusChip(src, { tone: configSourceTone(src) });
     return `<tr>
   <td><code style="font-family:var(--font-mono);font-size:12px;background:var(--v-bg-2);padding:2px 6px;border-radius:4px;">${esc(entry.key)}</code></td>
-  <td><span class="v-badge" style="font-size:11px;padding:2px 8px;">${esc(entry.area)}</span></td>
+  <td>${statusChip(entry.area, { size: 'sm' })}</td>
   <td><code>${esc(values[entry.key] ?? '')}</code></td>
   <td>${srcBadge}</td>
   <td class="sub" style="font-size:12px;">${esc(entry.entryPoint)}</td>
@@ -2077,7 +2089,7 @@ function governanceSection(policy?: {
     <div>
       <div style="display:flex;align-items:center;gap:10px;">
         <h2 class="v-card-title">Governance policy</h2>
-        <span class="v-badge"><span class="dot"></span>Effective runtime &amp; startup settings</span>
+        ${statusChip('Effective runtime & startup settings')}
       </div>
       <p class="sub" style="margin:6px 0 0;font-size:13px;max-width:82ch;line-height:1.5;">The active policy and where each setting comes from. Startup-only settings require a restart; runtime settings are audited per change. This page never grants autonomy. Agents act only inside the R/A/I matrix.</p>
     </div>
@@ -2111,7 +2123,7 @@ function compilerGapsSection(
   const items = withGaps
     .map(
       (g) =>
-        `<li><code style="font-family:var(--font-mono);font-size:12px;background:var(--v-bg-2);padding:2px 6px;border-radius:4px;">${esc(g.cardId)}</code> <strong>${esc(g.intent)}</strong> <span class="v-badge" style="font-size:11px;padding:1px 6px;margin:0 4px;">${esc(g.state)}</span> · gaps: <span class="err">${esc(g.gaps.join('; '))}</span>${g.evalRef ? ` · eval: <code>${esc(g.evalRef)}</code>` : ' · no eval suite reference (evals are the spec)'} · <a href="/console/learning/${esc(encodeURIComponent(g.cardId))}">evaluation evidence</a></li>`,
+        `<li><code style="font-family:var(--font-mono);font-size:12px;background:var(--v-bg-2);padding:2px 6px;border-radius:4px;">${esc(g.cardId)}</code> <strong>${esc(g.intent)}</strong> <span style="margin:0 4px;">${statusChip(g.state, { tone: skillCardTone(g.state) })}</span> · gaps: <span class="err">${esc(g.gaps.join('; '))}</span>${g.evalRef ? ` · eval: <code>${esc(g.evalRef)}</code>` : ' · no eval suite reference (evals are the spec)'} · <a href="/console/learning/${esc(encodeURIComponent(g.cardId))}">evaluation evidence</a></li>`,
     )
     .join('');
   return `<div class="v-card" style="margin-bottom:20px;">
@@ -2589,15 +2601,17 @@ export function startConsoleServer(
       { now: at },
     );
 
+  // Tri-state rather than pass/fail: an optional dependency that was never
+  // configured is *neutral*, not risk — a red chip would claim a failure that
+  // never happened. The tri-state is now the shared map's, and the chip's own
+  // dot carries the colour instead of a hand-drawn 6px circle.
   const readinessPill = (status: string): string => {
-    // Tri-state rather than pass/fail: an optional dependency that was never
-    // configured is *grey*, not red — a red pill would claim a failure that
-    // never happened.
-    if (status === 'ok')
-      return '<span class="v-badge v-badge-good" style="border-radius:9999px;padding:3px 10px;font-size:11.5px;font-weight:600;"><span class="dot" style="width:6px;height:6px;border-radius:50%;background:var(--v-fact);display:inline-block;margin-right:5px;"></span>ok</span>';
-    if (status === 'unconfigured-optional')
-      return '<span class="v-badge" style="border-radius:9999px;padding:3px 10px;font-size:11.5px;font-weight:500;background:var(--v-bg-2);color:var(--v-muted);"><span class="dot" style="width:6px;height:6px;border-radius:50%;background:var(--v-faint);display:inline-block;margin-right:5px;"></span>not configured</span>';
-    return '<span class="v-badge v-badge-risk" style="border-radius:9999px;padding:3px 10px;font-size:11.5px;font-weight:600;"><span class="dot" style="width:6px;height:6px;border-radius:50%;background:var(--v-risk);display:inline-block;margin-right:5px;"></span>needs attention</span>';
+    const label = ((): string => {
+      if (status === 'ok') return 'ok';
+      if (status === 'unconfigured-optional') return 'not configured';
+      return 'needs attention';
+    })();
+    return statusChip(label, { tone: readinessTone(status) });
   };
 
   const renderSystemReadiness = async (at: string): Promise<string> => {
@@ -7580,7 +7594,7 @@ export function startConsoleServer(
               res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
               res.end(
                 themeDocument(
-                  `<!DOCTYPE html><html lang="en" data-theme="${DEFAULT_THEME}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${verb} request · Vital</title>${themeHead()}</head><body style="padding:0"><main id="main" style="max-width:560px;margin:0 auto;padding:40px 20px 64px"><div class="utility-bar" style="display:flex;justify-content:flex-end;margin-bottom:18px">${themeToggleButton()}</div><div class="card" style="padding:26px 28px"><span class="v-badge v-badge-warn"><span class="dot"></span>Human decision</span><h1 style="font-size:24px;font-weight:700;letter-spacing:-0.025em;margin:12px 0 8px;color:var(--v-ink)">${verb} request <code>${esc(requestId)}</code>?</h1><p class="sub" style="color:var(--v-muted);font-size:13.5px;line-height:1.6;margin:0 0 20px">This request is waiting on a human. Confirming records the decision in the audit log.</p><form method="POST" action="/api/buzz/webhook" style="display:grid;gap:12px;max-width:320px"><input type="hidden" name="token" value="${esc(token ?? '')}"><input type="hidden" name="action" value="${esc(action)}"><input type="hidden" name="requestId" value="${esc(requestId)}"><button type="submit" class="v-btn ${action === 'decline' ? 'v-btn-danger' : 'v-btn-primary'}">${verb} request</button></form><p style="margin:20px 0 0"><a href="${esc(home)}" class="v-btn v-btn-ghost v-btn-sm">← Return to Mission Control</a></p></div></main></body></html>`,
+                  `<!DOCTYPE html><html lang="en" data-theme="${DEFAULT_THEME}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${verb} request · Vital</title>${themeHead()}</head><body style="padding:0"><main id="main" style="max-width:560px;margin:0 auto;padding:40px 20px 64px"><div class="utility-bar" style="display:flex;justify-content:flex-end;margin-bottom:18px">${themeToggleButton()}</div><div class="card" style="padding:26px 28px">${statusChip('Human decision', { tone: 'warn' })}<h1 style="font-size:24px;font-weight:700;letter-spacing:-0.025em;margin:12px 0 8px;color:var(--v-ink)">${verb} request <code>${esc(requestId)}</code>?</h1><p class="sub" style="color:var(--v-muted);font-size:13.5px;line-height:1.6;margin:0 0 20px">This request is waiting on a human. Confirming records the decision in the audit log.</p><form method="POST" action="/api/buzz/webhook" style="display:grid;gap:12px;max-width:320px"><input type="hidden" name="token" value="${esc(token ?? '')}"><input type="hidden" name="action" value="${esc(action)}"><input type="hidden" name="requestId" value="${esc(requestId)}"><button type="submit" class="v-btn ${action === 'decline' ? 'v-btn-danger' : 'v-btn-primary'}">${verb} request</button></form><p style="margin:20px 0 0"><a href="${esc(home)}" class="v-btn v-btn-ghost v-btn-sm">← Return to Mission Control</a></p></div></main></body></html>`,
                 ),
               );
               return;

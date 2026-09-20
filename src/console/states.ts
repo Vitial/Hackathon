@@ -8,6 +8,7 @@
  */
 
 import { themeCss } from './theme.ts';
+import { errorState } from './components.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -42,8 +43,13 @@ export interface FieldError {
 /** Accessible error summary: role=alert, links to fields, focus target. */
 export function errorSummary(errors: FieldError[], opts: { heading?: string } = {}): string {
   if (errors.length === 0) return '';
-  const items = errors.map((e) => `<li><a href="#${esc(e.field)}">${esc(e.message)}</a></li>`).join('');
-  return `<div class="error-summary" role="alert" tabindex="-1" data-error-summary><p><strong>${esc(opts.heading ?? 'There is a problem')}</strong></p><ul>${items}</ul></div>`;
+  return errorState({
+    title: opts.heading ?? 'There is a problem',
+    // The links are markup the caller owns (see `errorState`): each one jumps to
+    // the field it is about.
+    items: errors.map((e) => `<a href="#${esc(e.field)}">${esc(e.message)}</a>`),
+    summary: true,
+  });
 }
 
 /** Wire a field to its error via aria-describedby. Caller renders the <span id>. */
@@ -75,13 +81,19 @@ export function successReceipt(what: string, next: { href: string; label: string
   return `<div class="success" role="status"><p><strong>${esc(what)}</strong>${link}</p></div>`;
 }
 
+// The failure vocabulary below is `components.ts:errorState` — one block, so a
+// stage failure, a 403 and a timeout cannot drift apart in shape.
+
 export function errorBlock(stage: string, preserved: string, recovery: string): string {
-  return `<div class="error-summary" role="alert"><p><strong>Failed at ${esc(stage)}.</strong> ${esc(preserved)} Recovery: ${esc(recovery)}</p></div>`;
+  return errorState({ title: `Failed at ${stage}.`, body: preserved, recovery });
 }
 
 /** 403 without leaking restricted data: names the required authority only. */
 export function forbiddenBlock(required: string): string {
-  return `<div class="error-summary" role="alert"><p><strong>Not permitted.</strong> This action requires ${esc(required)}. No restricted data is shown.</p></div>`;
+  return errorState({
+    title: 'Not permitted.',
+    body: `This action requires ${required}. No restricted data is shown.`,
+  });
 }
 
 export interface PartialLists {
@@ -107,7 +119,10 @@ export function partialBlock(lists: PartialLists): string {
 }
 
 export function timeoutBlock(): string {
-  return `<div class="error-summary" role="alert"><p><strong>Timed out with an unknown result.</strong> Refresh to reconcile server state before retrying. The action may already have landed, so never assume nothing happened.</p></div>`;
+  return errorState({
+    title: 'Timed out with an unknown result.',
+    body: 'Refresh to reconcile server state before retrying. The action may already have landed, so never assume nothing happened.',
+  });
 }
 
 export function refreshBlock(what: string): string {
@@ -120,7 +135,10 @@ export function destructiveConfirm(opts: {
   retained: string;
   confirmLabel?: string;
 }): string {
-  return `<div class="error-summary" role="alert"><p><strong>Destructive action: ${esc(opts.target)}.</strong> ${esc(opts.consequences)} Retained: ${esc(opts.retained)}</p></div>`;
+  return errorState({
+    title: `Destructive action: ${opts.target}.`,
+    body: `${opts.consequences} Retained: ${opts.retained}`,
+  });
 }
 
 /** Consistent action labels across review / correction / approval / erasure. */

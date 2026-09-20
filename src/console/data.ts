@@ -21,9 +21,7 @@ export function renderDataPage(tenant: string, opts: DataPageOptions): string {
   const noticeHtml = opts.notice
     ? `<div class="success" role="status"><p><strong>${esc(opts.notice)}</strong></p></div>`
     : '';
-  const errorHtml = opts.error
-    ? `<div class="error-summary" role="alert"><p><strong>${esc(opts.error)}</strong></p></div>`
-    : '';
+  const errorHtml = opts.error ? errorState({ title: opts.error }) : '';
 
   // No page-level back link: detailDocument already renders one above this
   // body, and repeating it produced "Back to console ← Back to console".
@@ -38,22 +36,22 @@ ${noticeHtml}
 ${errorHtml}
 
 <div class="v-card" style="margin-bottom:16px;">
-  <h2 class="v-card-title">Export Reality Ledger</h2>
-  <p class="v-sub" style="margin:8px 0 16px;max-width:78ch;line-height:1.55;">
-    Download the complete portable snapshot of this organization's history: typed claims, claim links, decisions, Context Bundles, measured outcomes, and the append-only audit trail (JSON format).
-  </p>
+  ${sectionHeader({
+    title: 'Export Reality Ledger',
+    subHtml: `Download the complete portable snapshot of this organization's history: typed claims, claim links, decisions, Context Bundles, measured outcomes, and the append-only audit trail (JSON format).`,
+  })}
   <a class="v-btn v-btn-primary" href="/console/data/export" download="${esc(tenant)}-ledger-export.json">⬇ Download Ledger Export (JSON)</a>
 </div>
 
 <div class="v-card" style="margin-bottom:16px;">
-  <h2 class="v-card-title">Backup &amp; restore</h2>
-  <p class="v-sub" style="margin:8px 0 0;max-width:78ch;line-height:1.55;">
-    Backups are <strong>operator-managed infrastructure</strong>, not a console feature in this build.
+  ${sectionHeader({
+    title: 'Backup & restore',
+    subHtml: `Backups are <strong>operator-managed infrastructure</strong>, not a console feature in this build.
     The supported disaster-recovery path is a point-in-time copy of the database file (with artifact
     store) taken by your platform operator. Restoring is a file restore, verified by the
     backup/restore drill, <em>not</em> an in-app import. The export below is a portable evidence
-    record and is explicitly <strong>not a backup</strong> and cannot be restored by import.
-  </p>
+    record and is explicitly <strong>not a backup</strong> and cannot be restored by import.`,
+  })}
   <p class="v-sub" style="margin:10px 0 0;max-width:78ch;line-height:1.55;">
     To confirm current operational health, run <code>vital status --readiness</code> (or see the
     System readiness strip on the console home) and check your operator's backup job for the
@@ -62,10 +60,11 @@ ${errorHtml}
 </div>
 
 <div class="v-card" style="margin-bottom:16px;">
-  <h2 class="v-card-title">Verify Erasure Receipt</h2>
-  <p class="v-sub" style="margin:8px 0 14px;max-width:78ch;line-height:1.55;">
-    Check the cryptographic audit trail of a previously erased tenant to verify deletion completeness and retained proof rows.
-  </p>
+  ${sectionHeader({
+    title: 'Verify Erasure Receipt',
+    subHtml:
+      'Check the cryptographic audit trail of a previously erased tenant to verify deletion completeness and retained proof rows.',
+  })}
   <form method="get" action="/receipts/erasure" style="display:flex;gap:10px;max-width:480px;">
     <input name="slug" class="v-input" placeholder="Organization slug (e.g. acme)" required style="flex:1;">
     <button type="submit" class="v-btn v-btn-secondary">Verify Receipt</button>
@@ -73,11 +72,12 @@ ${errorHtml}
 </div>
 
 <div class="v-card" style="border-color:var(--v-risk);background:var(--v-tint-risk-bg);margin-bottom:16px;">
-  <h2 class="v-card-title" style="color:var(--v-tint-risk-ink);">Danger Zone: Permanent Tenant Erasure</h2>
-  <p class="v-sub" style="margin:8px 0 0;max-width:78ch;line-height:1.55;">
-    Permanently delete all claims, decisions, outcomes, credentials, and member sessions for <strong>${esc(tenant)}</strong>.
-    An in-memory export is verified before deletion commits, and an immutable proof receipt is recorded under <code>erased:${esc(tenant)}</code>.
-  </p>
+  ${sectionHeader({
+    title: 'Danger Zone: Permanent Tenant Erasure',
+    tone: 'risk',
+    subHtml: `Permanently delete all claims, decisions, outcomes, credentials, and member sessions for <strong>${esc(tenant)}</strong>.
+    An in-memory export is verified before deletion commits, and an immutable proof receipt is recorded under <code>erased:${esc(tenant)}</code>.`,
+  })}
   <p class="v-sub" style="color:var(--v-tint-risk-ink);font-weight:500;margin:10px 0 0;">
     ⚠️ This action cannot be undone. To proceed, type the organization slug <code>${esc(tenant)}</code> below and confirm.
   </p>
@@ -99,16 +99,17 @@ ${errorHtml}
 }
 
 import { CONSOLE_SHARED_CSS, skipLink } from './states.ts';
+import { errorState, sectionHeader } from './components.ts';
 
 export function renderErasureReceiptPage(verification: ErasureReceiptVerification, home = '/'): string {
   const content =
     !verification.found || !verification.receipt
       ? `<p class="sub"><a href="${esc(home)}">← Back</a></p>
 <h1>Erasure receipt verification</h1>
-<div class="error-summary" role="alert">
-  <p><strong>No erasure receipt found for slug: ${esc(verification.slug)}</strong></p>
-  <p class="sub">Either this organization was never erased, or the slug was mistyped.</p>
-</div>`
+${errorState({
+  title: `No erasure receipt found for slug: ${verification.slug}`,
+  body: 'Either this organization was never erased, or the slug was mistyped.',
+})}`
       : (() => {
           const r = verification.receipt!;
           const deletedRows = Object.entries(r.deleted)

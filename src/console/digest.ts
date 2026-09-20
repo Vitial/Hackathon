@@ -1,5 +1,6 @@
 import type { AsyncDb } from '../core/db.ts';
 import type { Coordinator } from '../coord/coordinator.ts';
+import { statusChip } from './components.ts';
 
 /**
  * Digest composition (TODO §2.2, built 2026-09-17).
@@ -132,14 +133,14 @@ export async function renderDigest(
         `<li class="v-row"><span class="v-row-main"><a href="${esc(digestRequestUrl(id))}">Request ${esc(id)}</a><span class="v-meta">${esc(request.updatedAt)}</span></span><span class="v-meta">${evidence.join(' · ') || 'No evidence references.'}</span></li>`,
       );
     }
-    const followOn = entry.followOnCount ? `<span class="v-badge">+${entry.followOnCount} more</span>` : '';
+    const followOn = entry.followOnCount ? statusChip(`+${entry.followOnCount} more`, { dot: false }) : '';
     groups.push(`<article class="v-card" style="margin-bottom:14px;">
   <div class="v-split" style="align-items:flex-start;margin-bottom:8px;">
     <div style="min-width:0;">
       <p class="v-eyebrow">${esc(entry.scope)}</p>
       <h2 class="v-card-title" style="margin-top:4px;">${esc(entry.goal)}</h2>
     </div>
-    <span class="v-badge"><span class="dot"></span>${entry.followOnCount + 1} notice(s)</span>${followOn}
+    ${statusChip(`${entry.followOnCount + 1} notice(s)`)}${followOn}
   </div>
   <p class="v-meta">First activity: ${esc(entry.startedAt)} · Latest activity: ${esc(entry.updatedAt)}</p>
   <ul class="v-list">${notices.join('')}</ul>

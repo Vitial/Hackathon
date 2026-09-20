@@ -311,7 +311,8 @@ T('an empty feed explains itself and offers a next step, never a bare "no data"'
     claims: {},
   };
   const html = renderFeedPage({ model: empty, tab: 'all' });
-  eq(html.includes('Nothing in this filter needs attention.'), true, 'the absence is named:');
+  eq(html.includes('<h3>Nothing in this filter needs attention</h3>'), true, 'the absence is named:');
+  eq(html.includes('class="v-empty"'), true, 'in the shared EmptyState block:');
   eq(html.includes('An empty feed means none of those exist right now'), true, 'and explained:');
   eq(html.includes('/console/human-work'), true, 'with a next action:');
   eq(html.includes('No data'), false, 'never a bare "No data":');

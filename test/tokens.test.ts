@@ -97,6 +97,54 @@ T('the meeting room reads the stage tokens, and the console supplies them', () =
   eq(used.length > 40, true, 'the stage palette is actually in use:');
 });
 
+T("a tone is the shared map's to decide, and a chip is the chip to build", () => {
+  // `TONE_CLASS` is the only place a tone becomes a `.v-badge-*` class. A surface
+  // that writes one out — or builds one by concatenation — has decided a state's
+  // colour for itself, and that is how the same review status reads amber on one
+  // page and blue on the page it links to. The chip owns its markup; the map owns
+  // its colour; nobody else gets an opinion.
+  const OWNERS = ['src/console/theme.ts', 'src/console/components.ts'];
+  const LITERAL = /v-badge-(?:good|warn|risk|info)\b/;
+  // A class built at runtime is the same decision written the long way round.
+  const BUILT = /v-badge-\$\{|v-badge-'\s*\+|v-badge-"\s*\+/;
+  // And the element itself: the chip owns its markup, including its size, so a
+  // surface that wants a tighter one asks for `size: 'sm'` rather than writing
+  // the span out and losing the next thing the chip gains.
+  const HAND_BUILT = /class="v-badge"/;
+
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(`${dir}/${entry.name}`);
+      else if (entry.name.endsWith('.ts')) files.push(`${dir}/${entry.name}`);
+    }
+  };
+  walk('src/console');
+
+  const scanning = files.filter((f) => !OWNERS.includes(f));
+  eq(scanning.length > 20, true, 'the scan actually reached the surfaces:');
+  const offenders = scanning.flatMap((f) => {
+    const src = readFileSync(f, 'utf8');
+    const hits: string[] = [];
+    src.split('\n').forEach((line, i) => {
+      if (LITERAL.test(line) || BUILT.test(line) || HAND_BUILT.test(line)) hits.push(`${f}:${i + 1}`);
+    });
+    return hits;
+  });
+  eq(offenders, [], 'chips come from statusChip/riskBadge, not from the surface:');
+
+  // Both sizes and both shapes are the chip's, and a size the sheet does not
+  // define would render at the default without anyone noticing.
+  const ownerSrc = readFileSync('src/console/components.ts', 'utf8');
+  eq(ownerSrc.includes("size === 'sm' ? ' v-badge-sm'"), true, 'the size becomes a class:');
+  eq(readFileSync('src/console/theme.ts', 'utf8').includes('.v-badge-sm{'), true, 'and the sheet defines it:');
+
+  // And the other direction: the owner must still be the one that names them, or
+  // this guard would pass on a console that had simply deleted every chip.
+  const owner = readFileSync('src/console/components.ts', 'utf8');
+  eq(owner.includes("good: 'v-badge-good'"), true, 'TONE_CLASS still names the classes:');
+});
+
 T('the review surface reads the token sheet, not a private palette', () => {
   // code-review.ts was the worst offender (its own --ink/--teal plus raw hex).
   // It is the worked example for the rest of the migration, so pin it.

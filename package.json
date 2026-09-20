@@ -16,6 +16,7 @@
     "verify:provenance": "node scripts/verify-provenance.mjs",
     "verify:topology": "node scripts/verify-topology.mjs",
     "verify:jcode-live": "tsx scripts/live-jcode-hello.ts",
+    "verify:dsh-live": "tsx scripts/live-dsh-hello.ts",
     "docs:refresh": "node scripts/refresh-docs.mjs",
     "docs:check": "node scripts/refresh-docs.mjs --check",
     "dogfood": "tsx scripts/dogfood-ship.ts",
@@ -28,6 +29,9 @@
     "node": "22.x"
   },
   "dependencies": {
+    "@deepseek-ai/dsh": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-sdk-client": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-sdk-protocol": "^0.0.1-rc.1",
     "@noble/curves": "^2.4.0",
     "pg": "^8.23.0",
     "zod": "^4.5.4"

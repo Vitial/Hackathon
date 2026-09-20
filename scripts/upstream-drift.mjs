@@ -27,3 +27,21 @@ for (const r of ['qm', 'buzz', 'jcode-1jehuang', 'tdam']) {
     `${r}: local ${local.slice(0, 12)} live ${live.slice(0, 12)} → ${local === live ? 'IN SYNC' : 'DRIFTED'}`,
   );
 }
+
+// deepseek-harness: vendored in-tree at vendor/deepseek-harness/, not
+// a .upstream/ clone. Compare the pinned SHA from docs/upstream.md
+// against the live remote HEAD.
+const VENDORED_PIN = 'ddefc45fbc7f8e46dd73185e68295696d1297887';
+try {
+  const live =
+    execFileSync('git', ['ls-remote', 'https://github.com/deepseek-ai/deepseek-harness.git', 'HEAD'], {
+      timeout: 30000,
+    })
+      .toString()
+      .split(/\s/)[0] ?? '';
+  console.log(
+    `deepseek-harness (vendor): pinned ${VENDORED_PIN.slice(0, 12)} live ${live.slice(0, 12)} → ${VENDORED_PIN === live ? 'IN SYNC' : 'DRIFTED'}`,
+  );
+} catch {
+  console.log(`deepseek-harness (vendor): pinned ${VENDORED_PIN.slice(0, 12)} live unreachable → UNKNOWN`);
+}

@@ -48,6 +48,9 @@ export interface HarnessTask {
   intent?: string;
   skillCardId?: string | null;
   routerConfidence?: number;
+  /** Bound on one agent turn. Defaults to the adapter's own (60s); raise for
+   *  live harnesses whose real turns take minutes. */
+  turnTimeoutMs?: number;
 }
 
 export interface HarnessOutcome {
@@ -329,12 +332,15 @@ export class LocalEchoAdapter implements HarnessAdapter {
 /**
  * Model selection below the tier decision (TODO §4): once the router says
  * MODEL, this picks which harness runs it. Engineering implementation
- * prefers jcode; everything else prefers the cheapest adapter available.
- * No silent fallback to an unlisted harness — unknown work fails closed.
+ * prefers dsh, then jcode; everything else prefers the cheapest adapter
+ * available. No silent fallback to an unlisted harness — unknown work
+ * fails closed.
  */
 export function selectAdapter(taskType: string, available: HarnessAdapter[]): HarnessAdapter {
   if (available.length === 0) throw new HarnessError('NO_HARNESS', 'no harness adapted: refusing rather than guessing');
   if (taskType.startsWith('engineering.')) {
+    const dsh = available.find((a) => a.name === 'dsh');
+    if (dsh) return dsh;
     const jcode = available.find((a) => a.name === 'jcode');
     if (jcode) return jcode;
   }

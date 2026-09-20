@@ -28,7 +28,7 @@ import type { AsyncDb } from '../../core/db.ts';
 import type { Coordinator } from '../../coord/coordinator.ts';
 import type { Ledger } from '../../ledger/ledger.ts';
 import { atLeast, type Role } from '../../core/auth.ts';
-import { statusChip } from '../components.ts';
+import { claimTone, emptyState, requestTone, roomTone, statusChip } from '../components.ts';
 import {
   claimDetailUrl,
   esc,
@@ -46,6 +46,7 @@ import {
   partitionRequestsByDecision,
   searchClaims,
   searchRequests,
+  type ListState,
 } from '../report.ts';
 import { awaitingHumanReview, renderReview } from '../review.ts';
 import {
@@ -64,6 +65,20 @@ import {
 } from '../inspector.ts';
 import { roomHealth } from '../shell-reads.ts';
 import { ROOM_CATEGORIES, ROOM_CATEGORY_LABELS } from '../../talk/rooms.ts';
+
+/**
+ * The no-results page for a filtered list: the copy the active filters imply,
+ * rendered in the shared EmptyState block. One helper, so Requests and Claims
+ * cannot each invent their own empty page.
+ */
+function noResultsCard(base: string, state: ListState): string {
+  const model = noResultsModel(base, state);
+  return emptyState({
+    title: model.title,
+    body: model.body,
+    actions: [`<a class="v-btn v-btn-secondary v-btn-sm" href="${esc(model.clearUrl)}">Clear search and filters</a>`],
+  });
+}
 
 export interface ListsEnv {
   /**
@@ -181,7 +196,7 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
             target: { kind: 'request' as const, id: r.id },
             title: r.goal,
             sub: r.id,
-            cells: [statusChip(r.state)],
+            cells: [statusChip(r.state, { tone: requestTone(r.state) })],
           });
           const group = (heading: string, rows2: { id: string; goal: string; state: string }[]): string =>
             rows2.length === 0
@@ -192,8 +207,7 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
                 );
           let body = '';
           if (pageResult.total === 0) {
-            const model = noResultsModel('/console/requests', state);
-            body = `<p class="sub">${esc(model.title)}: ${esc(model.body)} <a href="${esc(model.clearUrl)}">Clear search and filters</a></p>`;
+            body = noResultsCard('/console/requests', state);
           } else {
             body += group('Pending decision', groups.pending);
             body += group('Approved or executing', groups.active);
@@ -270,8 +284,7 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
           });
           let body: string;
           if (pageResult.total === 0) {
-            const model = noResultsModel('/console/claims', state);
-            body = `<p class="sub">${esc(model.title)}: ${esc(model.body)} <a href="${esc(model.clearUrl)}">Clear search and filters</a></p>`;
+            body = noResultsCard('/console/claims', state);
           } else {
             body =
               renderTable(
@@ -279,8 +292,8 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
                 pageResult.rows.map((c) => [
                   `<a class="v-strong" href="${esc(withReturnTo(claimDetailUrl(c.id), here))}">${esc(c.subject)}</a>`,
                   `<span class="v-mono v-meta">${esc(c.id)}</span>`,
-                  `<span class="v-badge">${esc(c.kind)}</span>`,
-                  statusChip(c.status),
+                  statusChip(c.kind),
+                  statusChip(c.status, { tone: claimTone(c.status) }),
                 ]),
               ) +
               (pageResult.truncated
@@ -376,12 +389,10 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
         const roomRow = (r: (typeof roomRows)[number]) => [
           `<a class="v-strong" href="${esc(roomUrl(r.scope))}">#${esc(r.roomName)}</a>`,
           `<span class="v-mono v-meta">${esc(r.scope)}</span>`,
-          `<a href="${esc(`/console/requests?scope=${encodeURIComponent(r.scope)}&return=${encodeURIComponent(here)}`)}" class="v-meta">${statusChip(r.status)}</a>`,
-          r.pending > 0
-            ? `<span class="v-badge v-badge-risk"><span class="dot"></span>${r.pending} waiting</span>`
-            : '<span class="v-meta">none</span>',
+          `<a href="${esc(`/console/requests?scope=${encodeURIComponent(r.scope)}&return=${encodeURIComponent(here)}`)}" class="v-meta">${statusChip(r.status, { tone: roomTone(r.status) })}</a>`,
+          r.pending > 0 ? statusChip(`${r.pending} waiting`, { tone: 'risk' }) : '<span class="v-meta">none</span>',
           r.stops > 0
-            ? `<span class="v-badge v-badge-risk"><span class="dot"></span>${r.stops} stop${r.stops === 1 ? '' : 's'}</span>`
+            ? statusChip(`${r.stops} stop${r.stops === 1 ? '' : 's'}`, { tone: 'risk' })
             : '<span class="v-meta">none</span>',
           `<span class="v-num v-meta">${Math.round(r.budget)}%</span>`,
         ];
@@ -398,7 +409,13 @@ ${renderTable(['Room', 'Scope', 'Status', 'Pending', 'Stops', 'Budget used'], in
           .join('');
         const body =
           total === 0
-            ? `<p class="sub">No results: no rooms match this search. <a href="${esc(clearFilterUrl('/console/rooms'))}">Clear search and filters</a></p>`
+            ? emptyState({
+                title: 'No results',
+                body: 'No rooms match this search.',
+                actions: [
+                  `<a class="v-btn v-btn-secondary v-btn-sm" href="${esc(clearFilterUrl('/console/rooms'))}">Clear search and filters</a>`,
+                ],
+              })
             : roomGroups +
               (offset + pageRooms.length < total
                 ? `<p class="v-meta">explicit truncation: showing ${pageRooms.length} of ${total} rooms</p>`
@@ -555,7 +572,7 @@ ${renderTable(['Room', 'Scope', 'Status', 'Pending', 'Stops', 'Budget used'], in
           title: r.goal,
           sub: r.id,
           cells: [
-            statusChip(r.state),
+            statusChip(r.state, { tone: requestTone(r.state) }),
             r.targetScope || r.originScope
               ? `<a class="v-mono v-meta" href="${esc(`/console/buzz/${encodeURIComponent(r.targetScope || r.originScope)}`)}">#${esc(r.targetScope || r.originScope)}</a>`
               : '<span class="v-meta">—</span>',
@@ -563,7 +580,13 @@ ${renderTable(['Room', 'Scope', 'Status', 'Pending', 'Stops', 'Budget used'], in
         }));
         const body =
           total === 0
-            ? `<p class="sub">${esc(emptyWhy[view])} <a href="${esc(clearFilterUrl('/console/human-work'))}">Clear search and filters</a></p>`
+            ? emptyState({
+                title: 'Nothing in this view',
+                body: emptyWhy[view],
+                actions: [
+                  `<a class="v-btn v-btn-secondary v-btn-sm" href="${esc(clearFilterUrl('/console/human-work'))}">Clear search and filters</a>`,
+                ],
+              })
             : inspectTable(['Work', 'State', 'Room'], rows, inspectLinkFor) +
               (offset + pageWork.length < total
                 ? `<p class="v-meta">explicit truncation: showing ${pageWork.length} of ${total} items</p>`

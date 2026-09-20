@@ -2,7 +2,7 @@
 
 **The grounding and reflex layer for the sovereign agent stack.**
 
-Status: v2 core built and green — typecheck clean, **<!-- vital:testcount -->894/894 tests passing<!-- /vital:testcount -->**
+Status: v2 core built and green — typecheck clean, **<!-- vital:testcount -->945/945 tests passing<!-- /vital:testcount -->**
 (real sockets, real sqlite; lint/format/provenance/audit gates green).
 Supersedes: "Final Idea: The Living Company.md" (v1), the v2 assessment rewrite, and the v3 sovereign-stack revision. This is the single source of truth.
 
@@ -666,7 +666,7 @@ Stated so we notice when we're wrong.
 
 ## 24. Verified build state (v2, 2026-09-09)
 
-**Typecheck: 0 errors. Tests: <!-- vital:testcount -->894/894 green<!-- /vital:testcount -->** (real sockets, real sqlite;
+**Typecheck: 0 errors. Tests: <!-- vital:testcount -->945/945 green<!-- /vital:testcount -->** (real sockets, real sqlite;
 eslint, prettier, provenance-guard, and audit gates green; 20 commits on
 main). Every behaviour below is proven by a named test — `[x]` in TODO.md
 means verified by a passing test or run, never "written".
@@ -788,7 +788,7 @@ ledger metaphor is dead. Arbitrary categories use teal tints plus grey. No dark
 deck except an optional inverted closing slide; no gradients, shadows, or thin
 rules; test on a projector, not a 6K display.
 
-**The dogfood move.** Tag the deck's own claims — `FACT` <!-- vital:testcount -->894 tests green<!-- /vital:testcount -->
+**The dogfood move.** Tag the deck's own claims — `FACT` <!-- vital:testcount -->945 tests green<!-- /vital:testcount -->
 (reproducible: `npm run typecheck && npm test`), `HYPOTHESIS` PM/Growth
 will pay (untested), `PREDICTION` precision ≥ 0.90 by month 9
 (dated, checkable). One slide, four lines. It proves the product by using it and it

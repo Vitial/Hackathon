@@ -5,7 +5,15 @@ import { parseTeam } from '../core/auth.ts';
 import type { IssueRow } from './issues.ts';
 import { renderDepartmentTabs, renderDepartmentBanner, type DashboardDepartment } from './dashboard-views.ts';
 
-import { kpiCard, paletteHtml, sectionCard, shortcutHints, statusChip, type PaletteItem } from './components.ts';
+import {
+  kpiCard,
+  paletteHtml,
+  roomTone,
+  sectionCard,
+  shortcutHints,
+  statusChip,
+  type PaletteItem,
+} from './components.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -233,7 +241,7 @@ export function renderOperationsDashboard(opts: OperationsDashboardOptions): str
             e,
           ) => `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--v-line);font-size:12.5px;">
         <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">#${esc2(e.roomName ?? e.scope)}</span>
-        <span style="display:flex;gap:10px;align-items:center;">${statusChip(e.status)}<span class="v-sub">${e.pendingApprovals} pending</span></span></div>`,
+        <span style="display:flex;gap:10px;align-items:center;">${statusChip(e.status, { tone: roomTone(e.status, e.badge) })}<span class="v-sub">${e.pendingApprovals} pending</span></span></div>`,
         )
         .join('') || '<p class="v-sub">No rooms yet.</p>';
     const greeting = defaultGreeting;

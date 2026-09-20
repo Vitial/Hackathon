@@ -19,6 +19,7 @@ import type { AsyncDb } from '../core/db.ts';
 import type { OrganizationalCompiler } from '../compiler/compiler.ts';
 import type { SkillCard } from '../compiler/compiler.ts';
 import { describeCardReadOnly } from '../compiler/registry.ts';
+import { riskBadge, sectionHeader, statusChip } from './components.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -74,8 +75,10 @@ function lifecycleRailHtml(): string {
   ];
   return `
   <div class="v-card">
-    <h2 class="v-card-title">Lifecycle ladder</h2>
-    <p class="v-sub" style="margin:6px 0 14px;">Every card moves through these states. The board below shows where each one actually is.</p>
+    ${sectionHeader({
+      title: 'Lifecycle ladder',
+      sub: 'Every card moves through these states. The board below shows where each one actually is.',
+    })}
     <div style="display:grid;gap:8px;">
       ${steps
         .map(
@@ -83,7 +86,7 @@ function lifecycleRailHtml(): string {
             s,
             i,
           ) => `<div class="v-attention-item" style="border-left:3px solid var(--v-accent);border-radius:14px;padding:11px 13px;">
-        <span class="v-badge" style="border-radius:9999px;"><span class="dot"></span>${esc(String(i + 1))}</span>
+        ${statusChip(String(i + 1))}
         <span><strong>${esc(s.name)}</strong><span class="v-meta" style="display:block;">${esc(s.note)}</span></span>
       </div>`,
         )
@@ -112,8 +115,11 @@ export async function renderCompilerParts(
 </div>`,
       rightPanelHtml: `
   <div class="v-card">
-    <h2 class="v-card-title">Why not trusted yet</h2>
-    <p class="v-sub" style="margin:8px 0 0;line-height:1.55;">No skill cards exist, so there are no transfer tests or drift readings to show. Cards are mined from real execution traces. Nothing here is demo-seeded. Compilation is an explicit, gated act: <a href="/console/learning/compile">compile a mined candidate</a> to create the first card. Mining alone will not fill this board.</p>
+    ${sectionHeader({
+      title: 'Why not trusted yet',
+      subHtml:
+        'No skill cards exist, so there are no transfer tests or drift readings to show. Cards are mined from real execution traces. Nothing here is demo-seeded. Compilation is an explicit, gated act: <a href="/console/learning/compile">compile a mined candidate</a> to create the first card. Mining alone will not fill this board.',
+    })}
   </div>
   ${lifecycleRailHtml()}`,
     };
@@ -145,10 +151,10 @@ export async function renderCompilerParts(
   const renderCardItem = (row: CardRow) => {
     const { card } = row;
     const gapCount = row.trustGaps.length;
-    const badge =
-      gapCount === 0
-        ? '<span class="v-badge v-badge-good" title="No open trust gaps">✔ trusted</span>'
-        : `<span class="v-badge v-badge-warn" title="${esc(row.trustGaps.join('; '))}">${esc(String(gapCount))} gap${gapCount === 1 ? '' : 's'}</span>`;
+    const badge = riskBadge(gapCount === 0 ? 'low' : 'watch', {
+      label: gapCount === 0 ? 'trusted' : `${gapCount} gap${gapCount === 1 ? '' : 's'}`,
+      reasons: row.trustGaps,
+    });
     const drift = driftNote(row);
     const gaps =
       gapCount > 0
@@ -185,7 +191,7 @@ export async function renderCompilerParts(
           <span class="v-eyebrow">${colName}</span>
           ${subNote}
         </div>
-        <span class="v-badge" style="padding:1px 8px;font-size:11px;">${items.length}</span>
+        ${statusChip(String(items.length), { size: 'sm' })}
       </div>
       <div>
         ${items.map(renderCardItem).join('\n')}
@@ -228,10 +234,13 @@ export async function renderCompilerParts(
   const withGaps = rows.filter((r) => r.trustGaps.length > 0).slice(0, 6);
   const rightPanelHtml = `
   <div class="v-card">
-    <h2 class="v-card-title">Why not trusted yet</h2>
+    ${sectionHeader({
+      title: 'Why not trusted yet',
+      sub: withGaps.length === 0 ? 'No open trust gaps on listed cards.' : undefined,
+    })}
     ${
       withGaps.length === 0
-        ? '<p class="v-sub" style="margin:8px 0 0;">No open trust gaps on listed cards.</p>'
+        ? ''
         : withGaps
             .map(
               (r) => `<div style="margin-top:12px;">

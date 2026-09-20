@@ -14,6 +14,7 @@
  */
 
 import type { RoomHealthEvaluation } from '../talk/health.ts';
+import { roomTone, statusChip } from './components.ts';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -62,12 +63,9 @@ export function renderDepartmentTabs(activeScope: DashboardDepartment): string {
 
 /** Real status cell: never a fabricated healthy default for missing rooms. */
 function statusOf(room: RoomHealthEvaluation | undefined): string {
-  if (!room)
-    return '<span class="v-badge" style="border-radius:9999px;"><span class="dot" style="background:var(--v-faint);"></span>no room data</span>';
-  let tone = 'v-badge-warn';
-  if (room.status === 'healthy' || room.badge.includes('🟢')) tone = 'v-badge-good';
-  else if (room.status === 'halted' || room.badge.includes('🔴')) tone = 'v-badge-risk';
-  return `<span class="v-badge ${tone}" style="border-radius:9999px;">${esc(room.badge)} ${esc(room.status)}</span>`;
+  // A room with no evaluation says so in words: a neutral chip, never a green one.
+  if (!room) return statusChip('no room data', { tone: 'neutral' });
+  return statusChip(`${room.badge} ${room.status}`.trim(), { tone: roomTone(room.status, room.badge), dot: false });
 }
 
 /** Real ceiling display: an unset (0) ceiling says so instead of inventing one. */

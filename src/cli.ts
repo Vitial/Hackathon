@@ -52,6 +52,7 @@ import {
 } from './ledger/export.ts';
 import { runIngestionWorker } from './ingest/worker.ts';
 import { runApplicationWorker } from './substrate/worker.ts';
+import { dshClientOptionsFromEnv } from './dsh/launch.ts';
 import { workerBuzzSurface } from './talk/buzz-runtime.ts';
 
 /**
@@ -557,6 +558,7 @@ if (cmd === 'status') {
     const workerPromise = runApplicationWorker(db, createLedger(db), createCoordinator(db), {
       tenant,
       jcodeSocketPath: process.env.JCODE_API_SOCKET,
+      dsh: dshClientOptionsFromEnv(),
       signal: workerController.signal,
       ...(buzz ? { buzz } : {}),
     });
@@ -665,6 +667,7 @@ if (cmd === 'status') {
     const result = await runApplicationWorker(db, createLedger(db), createCoordinator(db), {
       tenant,
       jcodeSocketPath: jcodeSocket,
+      dsh: dshClientOptionsFromEnv(),
       pollIntervalMs,
       executorLane,
       signal: controller.signal,

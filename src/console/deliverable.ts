@@ -9,6 +9,7 @@ import {
   type DeliverableItem,
   type DeliverableVersion,
 } from '../wedge/deliverable-artifact.ts';
+import { riskBadge } from './components.ts';
 import { operatorFields, REVIEW_SCRIPT, type ReviewOptions } from './review.ts';
 import { destructiveConfirm } from './states.ts';
 
@@ -27,8 +28,11 @@ const classLabel = (c: DeliverableItem['classification']): string => {
 };
 
 function renderItem(item: DeliverableItem): string {
+  // A grounding check that failed is an *assessment* of the item, so it is the
+  // shared risk badge rather than a paragraph painted with the risk token: the
+  // level, the glyph and the reason all arrive together.
   const fail = item.checkFailed
-    ? `<p style="color:var(--v-risk)"><strong>Check failed:</strong> ${esc(item.checkFailed)}</p>`
+    ? `<p>${riskBadge('blocked', { label: 'Check failed', reasons: [item.checkFailed] })} ${esc(item.checkFailed)}</p>`
     : '';
   const cites =
     item.claimIds.length > 0
@@ -40,7 +44,9 @@ function renderItem(item: DeliverableItem): string {
 function renderChecks(version: DeliverableVersion): string {
   const draft = version.draftCheck;
   if (draft.ok && !version.items.some((i) => i.checkFailed)) {
-    return '<p style="color:var(--v-fact)">All grounding checks passed.</p>';
+    // `low` is a real answer: a clean version says so, in the same badge the
+    // blocked one uses, instead of a green sentence.
+    return `<p>${riskBadge('low', { label: 'All grounding checks passed.' })}</p>`;
   }
   const parts: string[] = [];
   if (draft.unverified.length > 0) {

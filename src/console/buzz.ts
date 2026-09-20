@@ -8,11 +8,16 @@ import type { Coordinator } from '../coord/coordinator.ts';
 import { listUsers, parseTeam } from '../core/auth.ts';
 import { svgIcon } from './buzz-icons.ts';
 import {
+  BUZZ_REF_CHIP_STYLE,
   loadBuzzContext,
   recordRefFromHref,
+  recordRefsFromMessage,
   recordRefsFromThread,
   refKey,
+  renderAttachPicker,
   renderBuzzContextPanel,
+  renderRecordRefChips,
+  type BuzzContextEntry,
   type BuzzMessageLike,
   type BuzzRecordRef,
 } from './buzz-context.ts';
@@ -589,7 +594,14 @@ interface RoomContextPanelInput {
  * has nothing to put in — and a selection that is already among those
  * references costs one more statement for nothing.
  */
-async function roomContextPanel(db: AsyncDb, tenant: string, input: RoomContextPanelInput): Promise<string> {
+/** The region's markup, and the entries it was built from. */
+interface RoomContextPanel {
+  html: string;
+  /** What the room's references resolved to — the message chips read these. */
+  entries: BuzzContextEntry[];
+}
+
+async function roomContextPanel(db: AsyncDb, tenant: string, input: RoomContextPanelInput): Promise<RoomContextPanel> {
   const at = input.at ?? new Date().toISOString();
   const { refs, withheld } = recordRefsFromThread(input.messages);
   const entries = refs.length
@@ -612,14 +624,17 @@ async function roomContextPanel(db: AsyncDb, tenant: string, input: RoomContextP
 
   // No stylesheet: the shell emits it once for the document, and the fragments
   // the swap script fetches are injected into a document that has it.
-  return renderBuzzContextPanel(entries, {
-    scope: input.scopeLabel,
-    roomUrl: input.roomUrl,
-    withheld,
-    at,
-    open,
-    includeStyle: false,
-  });
+  return {
+    entries,
+    html: renderBuzzContextPanel(entries, {
+      scope: input.scopeLabel,
+      roomUrl: input.roomUrl,
+      withheld,
+      at,
+      open,
+      includeStyle: false,
+    }),
+  };
 }
 
 /** A room page: its body, plus the context region the shell renders beside it. */
@@ -645,7 +660,7 @@ export async function renderBuzzRoomContext(
   const def = await resolveRoomDef(db, tenant, scope);
   if (!def) return null;
   const thread = await loadRoomThread(db, tenant, scope, surface);
-  return roomContextPanel(db, tenant, {
+  const panel = await roomContextPanel(db, tenant, {
     messages: thread.messages,
     roomUrl: opts.roomUrl,
     scopeLabel: roomContextPanelName(scope, rawScope, def.name),
@@ -653,6 +668,7 @@ export async function renderBuzzRoomContext(
     canReadIssues: parseTeam(opts.viewerTeam) === 'engineering',
     open: opts.open,
   });
+  return panel.html;
 }
 
 /** One room: thread, pending approvals, gauge, canvas, command box. */
@@ -684,6 +700,22 @@ export async function renderBuzzRoom(
   const gauge = await tracker.computeGauge(scope);
   const config = await loadRoomConfig(db, tenant, scope);
   const thread = await loadRoomThread(db, tenant, scope, surface);
+
+  // The room's references, read once for this render: the shell's context region
+  // and the chips on the messages that carry those references are two readings of
+  // the same entries, so they are read here once and handed to both rather than
+  // paid for twice. This is also why the region is built before the thread: a
+  // message's chip is derived from the message, not from the region.
+  const roomDisplayName = roomContextPanelName(scope, rawScope, def.name);
+  const roomUrl = `/console/buzz/${encodeURIComponent(scope)}`;
+  const roomContext = await roomContextPanel(db, tenant, {
+    messages: thread.messages,
+    roomUrl,
+    scopeLabel: roomDisplayName,
+    // The same gate the Issues board uses: department, never role.
+    canReadIssues: parseTeam(viewerTeam) === 'engineering',
+    open: openRef ?? null,
+  });
 
   // Real participant count: distinct authors who actually posted in this
   // room. The old header hardcoded "9 members".
@@ -885,6 +917,11 @@ export async function renderBuzzRoom(
         ? `<div style="border-left:3px solid var(--buzz-warn);background:var(--buzz-warn-soft);border-radius:0 8px 8px 0;padding:10px 12px;"><div class="buzz-md" style="font-size:13.5px;line-height:1.45;color:var(--buzz-ink-1);">${panelLinks(renderMarkdownLite(m.content.slice(0, 4000)))}</div></div>`
         : `<div class="buzz-md" style="font-size:13.5px;line-height:1.45;color:var(--buzz-ink-1);overflow-wrap:anywhere;">${panelLinks(renderMarkdownLite(m.content.slice(0, 4000)))}</div>${doneArrow}`;
 
+      // The records this message carries, as chips. Derived from the message
+      // itself, so a message sent long before this existed gets them too, and a
+      // link pasted by hand is attached exactly like one the picker inserted.
+      const refChips = renderRecordRefChips(recordRefsFromMessage(m), roomContext.entries, { roomUrl });
+
       const replies = byRoot.get(m.id) ?? [];
       const replyThreadHtml =
         replies.length > 0
@@ -900,7 +937,7 @@ export async function renderBuzzRoom(
           const rw = displayName(r.author, config.agentName);
           return `<div style="display:flex;gap:8px;padding:4px 0;">
         ${getMascotAvatar(rw, 26)}
-        <div style="flex:1;"><span style="font-weight:600;font-size:12.5px;">${esc(rw)}</span> <span style="font-size:11px;color:var(--buzz-ink-3);">${esc(fmtClock(r.createdAt))}</span><div class="buzz-md" style="font-size:12.5px;margin-top:2px;">${panelLinks(renderMarkdownLite(r.content.slice(0, 4000)))}</div></div>
+        <div style="flex:1;"><span style="font-weight:600;font-size:12.5px;">${esc(rw)}</span> <span style="font-size:11px;color:var(--buzz-ink-3);">${esc(fmtClock(r.createdAt))}</span><div class="buzz-md" style="font-size:12.5px;margin-top:2px;">${panelLinks(renderMarkdownLite(r.content.slice(0, 4000)))}</div>${renderRecordRefChips(recordRefsFromMessage(r), roomContext.entries, { roomUrl })}</div>
       </div>`;
         })
         .join('')}
@@ -923,6 +960,7 @@ export async function renderBuzzRoom(
       <span style="font-size:11.5px;color:var(--buzz-ink-3);">${esc(time)}</span>
     </div>
     <div style="margin-top:2px;">${bubble}</div>
+    ${refChips}
     ${reactions}
     ${replyThreadHtml}
   </div>
@@ -973,21 +1011,11 @@ export async function renderBuzzRoom(
       <div class="buzz-welcome__grid">${welcomeChipHtml}</div>
     </li>`;
 
-  const roomDisplayName = roomContextPanelName(scope, rawScope, def.name);
-
   // The record context region belongs to the Buzz shell — it sits beside the
   // conversation on every theme, and the shell swaps it in place when a link is
   // clicked — but only this room knows what its own conversation references, so
   // the room builds the region and hands it up. See `BuzzRoomView`.
-  const roomUrl = `/console/buzz/${encodeURIComponent(scope)}`;
-  const contextPanel = await roomContextPanel(db, tenant, {
-    messages: thread.messages,
-    roomUrl,
-    scopeLabel: roomDisplayName,
-    // The same gate the Issues board uses: department, never role.
-    canReadIssues: parseTeam(viewerTeam) === 'engineering',
-    open: openRef ?? null,
-  });
+  const contextPanel = roomContext.html;
 
   // Budget bar fill tone (real gauge, no invented numbers).
   let budgetFillClass = '';
@@ -996,6 +1024,7 @@ export async function renderBuzzRoom(
   const budgetFillPct = Math.max(0, Math.min(100, gauge.percentage));
 
   const body = `
+${BUZZ_REF_CHIP_STYLE}
 <style>
   .buzz-message-row:hover {
     background: var(--buzz-inset);
@@ -1275,6 +1304,7 @@ export async function renderBuzzRoom(
     <span style="display:none">Send a command</span>
     <form method="post" action="/console/buzz/${esc(scope)}/command" class="buzz-composer__form">
       <input type="hidden" name="csrf" value="${esc(csrf)}">
+      ${renderAttachPicker(roomContext.entries, { roomUrl })}
       <div class="buzz-composer__card">
         <input type="text" name="command" id="buzz-composer" list="buzz-commands" class="buzz-composer__input" placeholder="Message #${esc(roomDisplayName)}" autocomplete="off">
         <datalist id="buzz-commands">
@@ -1291,6 +1321,7 @@ export async function renderBuzzRoom(
         <div class="buzz-composer__bar">
           <div class="buzz-composer__tools">
             <button type="button" id="buzz-at" class="buzz-tool-btn" title="Mention someone">${svgIcon('at', 16)}</button>
+            <button type="button" id="buzz-attach-toggle" class="buzz-tool-btn" title="Attach a record" aria-expanded="false" aria-controls="buzz-attach">${svgIcon('clipboard', 16)}</button>
             <button type="button" class="buzz-tool-btn" title="Attach file">${svgIcon('paperclip', 16)}</button>
             <button type="button" id="buzz-emoji" class="buzz-tool-btn" title="Emoji">${svgIcon('smile', 16)}</button>
             <button type="button" class="buzz-tool-btn" title="Formatting">${svgIcon('bold', 16)}</button>
@@ -1310,10 +1341,17 @@ export async function renderBuzzRoom(
     const em=document.getElementById('buzz-emoji');
     const pick=document.getElementById('buzz-emoji-pick');
     const send=document.getElementById('buzz-send');
+    const att=document.getElementById('buzz-attach');
+    const attBtn=document.getElementById('buzz-attach-toggle');
     const syncSend=()=>{if(send&&i)send.classList.toggle('buzz-composer__send--ready',i.value.trim().length>0);};
     if(at&&i){at.addEventListener('click',()=>{const s=i.selectionStart??i.value.length;const v=i.value;i.value=v.slice(0,s)+'@'+v.slice(s);i.focus();i.setSelectionRange(s+1,s+1);i.setAttribute('list','buzz-users');syncSend();try{i.showPicker&&i.showPicker();}catch{}});}
     if(em&&pick){em.addEventListener('click',()=>{const shown=getComputedStyle(pick).display!=='none';pick.style.display=shown?'none':'flex';});pick.querySelectorAll('[data-emoji]').forEach(b=>b.addEventListener('click',()=>{const s=i.selectionStart??i.value.length;const v=i.value;i.value=v.slice(0,s)+b.dataset.emoji+v.slice(s);i.focus();syncSend();pick.style.display='none';}));}
     if(i){i.addEventListener('input',()=>{if(i.value.includes('@'))i.setAttribute('list','buzz-users');syncSend();});i.addEventListener('keydown',e=>{if(e.key==='/'&&!i.value){i.setAttribute('list','buzz-commands');}});}
+    // Attaching a record writes the record's canonical link into the message.
+    // The message text is the store, which is why the chip on the sent message
+    // is derived from it rather than tracked beside it — the link is what the
+    // relaying copy carries and what the context panel reads back.
+    if(att&&attBtn){att.hidden=false;const insert=(href,label)=>{if(!i)return;const s=i.selectionStart??i.value.length;const link='['+label+']('+href+')';i.value=i.value.slice(0,s)+link+i.value.slice(s);i.focus();i.setSelectionRange(s+link.length,s+link.length);syncSend();};attBtn.addEventListener('click',()=>{const shown=!att.hidden;att.hidden=shown;attBtn.setAttribute('aria-expanded',String(!shown));});att.querySelectorAll('[data-buzz-attach]').forEach(b=>b.addEventListener('click',()=>{insert(b.getAttribute('data-buzz-attach'),b.getAttribute('data-buzz-attach-label')||'');att.hidden=true;attBtn.setAttribute('aria-expanded','false');}));}
     // Welcome-card suggestion chips pre-fill the existing composer (no new commands).
     document.querySelectorAll('.buzz-welcome-card[data-fill]').forEach(c=>c.addEventListener('click',()=>{if(!i)return;i.value=c.getAttribute('data-fill');i.focus();i.setSelectionRange(i.value.length,i.value.length);syncSend();}));
   }catch{}</script>

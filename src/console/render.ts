@@ -2,6 +2,7 @@ import type { ConsoleReport, CostPoint, TierBucket } from './report.ts';
 import { COST_CURVE_BUDGET, MAX_CARDS_PER_STATE, MAX_NEEDS_HUMAN, MAX_ROOMS, ROOM_REQUESTS } from './report.ts';
 
 import { THEME_INIT_SCRIPT, THEME_TOGGLE_SCRIPT, themeStyleBlock, themeToggleButton } from './theme.ts';
+import { pageHeader } from './components.ts';
 
 /**
  * Static renderer for the console read model: one self-contained HTML file,
@@ -545,20 +546,16 @@ export function renderListPage(opts: {
   ]
     .filter(Boolean)
     .join('');
-  const count = `${opts.total.toLocaleString()} total · showing ${opts.shown.toLocaleString()}`;
-  return `<div class="v-page-head">
-  <div>
-    <p class="v-eyebrow">${esc(opts.title)}</p>
-    <h1 class="v-page-title">${esc(opts.heading)}</h1>
-  </div>
-</div>
+  const count = `${opts.total.toLocaleString()} total · showing ${opts.shown.toLocaleString()}${
+    opts.truncated ? ' · explicit truncation: narrow the search or page further' : ''
+  }`;
+  return `${pageHeader({ eyebrow: opts.title, title: opts.heading, count })}
 <form class="v-filterbar" method="get" action="${esc(opts.searchAction)}" role="search">
   <label class="v-sr-only" for="q">Search ${esc(opts.heading.toLowerCase())}</label>
   <input id="q" name="q" class="v-input" type="search" value="${esc(opts.query)}" placeholder="Search ${esc(opts.heading.toLowerCase())}…" autocomplete="off">
   <button class="v-btn v-btn-primary" type="submit">Search</button>
   <a class="v-btn v-btn-ghost" href="${esc(opts.clearUrl)}">Clear</a>
 </form>
-<p class="v-meta v-count">${esc(count)}${opts.truncated ? ' · explicit truncation: narrow the search or page further' : ''}</p>
 ${opts.body}
 ${pages ? `<nav class="v-pager" aria-label="Pagination">${pages}</nav>` : ''}
 ${opts.returnNote ? `<p class="v-meta">${esc(opts.returnNote)}</p>` : ''}`;

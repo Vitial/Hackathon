@@ -4,6 +4,7 @@ import type { Coordinator } from '../coord/coordinator.ts';
 import type { OrganizationalCompiler } from '../compiler/compiler.ts';
 import { preregister, getPrereg, type Preregistration } from '../attrib/attribution.ts';
 import { mineCandidates } from '../compiler/compiler.ts';
+import { riskBadge, statusChip, type Tone } from './components.ts';
 import { loadFanOutRun, type FanOutLegRecord, type FanOutWorkflowRun } from '../wedge/fanout-workflow.ts';
 import { getReleaseStage, type ReleaseStageRecord } from '../wedge/ship.ts';
 import { resumeFanOutWorkflow } from '../wedge/ship.ts';
@@ -750,20 +751,20 @@ export async function createFeatureWorkspace(
   return input.id;
 }
 
-/** Tint class per lifecycle state — the label always travels with the color. */
-const LIFECYCLE_TONE: Record<WorkspaceLifecycle, string> = {
-  SOURCED: 'v-badge',
-  FAN_OUT: 'v-badge-info',
-  EXECUTING: 'v-badge-info',
-  EXECUTION_COMPLETE: 'v-badge-warn',
-  MEASUREMENT_PENDING: 'v-badge-warn',
-  OUTCOME_VERIFIED: 'v-badge-good',
-  CANCELLED: 'v-badge',
-  BLOCKED: 'v-badge-risk',
+/** Tone per lifecycle state — the label always travels with the color. */
+const LIFECYCLE_TONE: Record<WorkspaceLifecycle, Tone> = {
+  SOURCED: 'neutral',
+  FAN_OUT: 'info',
+  EXECUTING: 'info',
+  EXECUTION_COMPLETE: 'warn',
+  MEASUREMENT_PENDING: 'warn',
+  OUTCOME_VERIFIED: 'good',
+  CANCELLED: 'neutral',
+  BLOCKED: 'risk',
 };
 
 function lifecycleBadge(lifecycle: WorkspaceLifecycle): string {
-  return `<span class="v-badge ${LIFECYCLE_TONE[lifecycle]}"><span class="dot"></span>${esc(lifecycle)}</span>`;
+  return statusChip(lifecycle, { tone: LIFECYCLE_TONE[lifecycle] });
 }
 
 export function renderWorkflowListPage(
@@ -801,7 +802,7 @@ export function renderWorkflowDetailPage(
   const legs = view.legs
     .map(
       (l) =>
-        `<tr><td>${esc(l.key)}</td><td>${esc(l.status)}${l.stalled ? ' <span class="v-badge v-badge-risk"><span class="dot"></span>stalled</span>' : ''}</td><td>${l.url ? `<a href="${esc(l.url)}">${esc(l.requestId ?? '')}</a>` : ''}</td>
+        `<tr><td>${esc(l.key)}</td><td>${esc(l.status)}${l.stalled ? ` ${riskBadge('blocked', { label: 'stalled', reasons: l.stallDetail ? [l.stallDetail] : [] })}` : ''}</td><td>${l.url ? `<a href="${esc(l.url)}">${esc(l.requestId ?? '')}</a>` : ''}</td>
 <td>${esc(l.requestState ?? '')}</td><td>${l.decisionId ? `<a href="/console/decisions/${esc(encodeURIComponent(l.decisionId))}">${esc(l.decisionId)}</a>` : ''}</td>
 <td>${esc(l.reason ?? '')}</td></tr>`,
     )
