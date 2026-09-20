@@ -69,7 +69,15 @@ import {
   type TenantAccessState,
   type User,
 } from '../core/auth.ts';
-import { cognitoFromEnv, cognitoSignUp, cognitoVerifyPassword, CognitoError, type CognitoConfig } from './cognito.ts';
+import {
+  cognitoFromEnv,
+  cognitoSignUp,
+  cognitoConfirmSignUp,
+  cognitoResendConfirmationCode,
+  cognitoVerifyPassword,
+  CognitoError,
+  type CognitoConfig,
+} from './cognito.ts';
 import {
   confirmMfaEnrollment,
   consumeMfaRecoveryCode,
@@ -925,6 +933,41 @@ async function loginTenantContext(db: AsyncDb, slug: string): Promise<{ boundSlu
   return { boundSlug: slug, boundName: t?.name ?? slug };
 }
 
+/**
+ * The step between a pool sign-up and a first sign-in.
+ *
+ * Cognito will not confirm a public SignUp by itself: the pool's
+ * auto_verified_attributes decides what becomes verified *when* a code is
+ * confirmed, not whether one is needed. Verified against the deployed pool —
+ * SignUp answers UserConfirmed: false and mails a code — so this is where that
+ * code goes. The same form rescues an account whose sign-in was refused as
+ * UNCONFIRMED, which is otherwise a dead end.
+ */
+function verifyEmailCodePage(
+  csrf: string,
+  opts: { error?: string; notice?: string; email?: string; next?: string } = {},
+): string {
+  const nextField = opts.next ? `<input type="hidden" name="next" value="${esc(opts.next)}">` : '';
+  return page(
+    'Vital Console: confirm your email',
+    `<h1>Confirm your email</h1>
+<p class="sub">We emailed a confirmation code when this account was created. Entering it verifies the address and lets you sign in.</p>
+${opts.notice ? `<div class="success" role="status"><p class="sub"><strong>${esc(opts.notice)}</strong></p></div>` : ''}
+${opts.error ? errorState({ title: opts.error }) : ''}
+<form method="post" action="/verify-email">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  ${nextField}
+  <label class="sub" for="email">work email</label>
+  <input id="email" name="email" type="email" autocomplete="username" value="${esc(opts.email ?? '')}" required>
+  <label class="sub" for="code">confirmation code</label>
+  <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+  <button type="submit" name="action" value="confirm">Confirm email</button>
+  <button type="submit" name="action" value="resend" formnovalidate>Email me a new code</button>
+</form>
+<p class="sub">Codes expire after 24 hours. <a href="/login">Back to sign in</a></p>`,
+  );
+}
+
 function loginPage(
   csrf: string,
   opts: {
@@ -933,6 +976,12 @@ function loginPage(
     next?: string;
     recovery?: boolean;
     email?: string;
+    /**
+     * Set when the pool refused the sign-in because the account still needs
+     * its email confirmed: the page then points at the code step rather than
+     * leaving the user with an error and no way forward.
+     */
+    confirmHref?: string;
     expired?: boolean;
     boundSlug?: string;
     boundName?: string;
@@ -953,6 +1002,9 @@ function loginPage(
         summary: true,
       })
     : '';
+  const confirmNote = opts.confirmHref
+    ? `<p class="sub" role="status">This account still needs its email address confirmed. <a href="${esc(opts.confirmHref)}">Enter the code we emailed you</a> to finish.</p>`
+    : '';
   return page(
     'Vital Console: sign in',
     `<h1>Sign in to ${esc(name)}</h1>
@@ -960,6 +1012,7 @@ function loginPage(
 ${expiredNotice}
 ${opts.notice ? `<p class="sub" role="status">${esc(opts.notice)}</p>` : ''}
 ${errorBlock}
+${confirmNote}
 ${
   opts.recovery
     ? `<p class="sub">This organization has accounts but no usable owner. Ask your operator to run <code>vital passwd</code> or issue a reset link with <code>vital reset-link</code>.</p>`
@@ -3323,6 +3376,10 @@ export function startConsoleServer(
                 e instanceof CognitoError &&
                 ['IDP_DOWN', 'THROTTLED', 'UNCONFIRMED', 'RESET_REQUIRED'].includes(e.code);
               const disabledLocal = e instanceof AuthError && e.code === 'DISABLED';
+              // An unconfirmed pool account is not a credential failure: give
+              // the page the way to finish it (the code step) instead of the
+              // error alone, which is how accounts were left stranded.
+              const needsConfirm = e instanceof CognitoError && e.code === 'UNCONFIRMED';
               let detail = 'invalid credentials';
               if (idpVisible) detail = (e as CognitoError).message.replace(/^\[cognito:[^\]]+\]\s*/, '');
               else if (locked || disabledLocal) detail = (e as AuthError).message.replace(/^\[auth:[^\]]+\]\s*/, '');
@@ -3336,6 +3393,7 @@ export function startConsoleServer(
                   next,
                   email,
                   recovery: accessState === 'recovery',
+                  confirmHref: needsConfirm ? `/verify-email?email=${encodeURIComponent(email)}` : undefined,
                   ...tenantCtx,
                 }),
               );
@@ -3852,7 +3910,15 @@ export function startConsoleServer(
                 userId = (await selfServeSignup(db, tenant, { email, name, password: localPassword }, at)).id;
               }
               await grantSignupCredits(db, tenant, userId, at);
-              return json(res, 200, { ok: true, email, credits: SIGNUP_FREE_CREDITS, confirmationRequired });
+              return json(res, 200, {
+                ok: true,
+                email,
+                credits: SIGNUP_FREE_CREDITS,
+                confirmationRequired,
+                // Where the funnel sends the signer to finish: the code step is
+                // on the console, which is the only side that can call the pool.
+                ...(confirmationRequired ? { verifyPath: `/verify-email?email=${encodeURIComponent(email)}` } : {}),
+              });
             } catch (e) {
               return json(res, 400, { ok: false, error: signupErrorMessage(e) });
             }
@@ -3955,7 +4021,21 @@ export function startConsoleServer(
           }
           if (path === '/verify-email' && method === 'GET') {
             const token = url.searchParams.get('token') ?? '';
-            if (!token) return redirect(res, '/login');
+            if (!token) {
+              // No token means this is the pool's sign-up confirmation step,
+              // not the recovery-channel link. Without a pool there is nothing
+              // to confirm, so the page does not exist.
+              if (!cognito) return redirect(res, '/login');
+              if (await sessionOf()) return redirect(res, home);
+              const csrf = randomBytes(32).toString('hex');
+              const next = safeReturnPath(url.searchParams.get('next'));
+              res.writeHead(200, {
+                'content-type': 'text/html; charset=utf-8',
+                'set-cookie': preCsrfCookie(csrf, secure, cookieValue(req, PRE_CSRF_COOKIE)),
+              });
+              res.end(verifyEmailCodePage(csrf, { email: (url.searchParams.get('email') ?? '').trim(), next }));
+              return;
+            }
             try {
               const user = await confirmEmailVerification(db, token, at);
               res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -3975,6 +4055,79 @@ export function startConsoleServer(
               );
             }
             return;
+          }
+          if (path === '/verify-email' && method === 'POST') {
+            // The pool's confirmation step; it exists only where a pool does.
+            if (!cognito) return redirect(res, '/login');
+            let call: Call;
+            try {
+              call = await parseCall(req);
+            } catch (e) {
+              return bodyError(res, e);
+            }
+            if (!preCsrfOk(req, call.csrf))
+              return json(res, 403, { ok: false, error: 'bad CSRF token; reload the form' });
+            const email = (call.fields.email ?? '').trim();
+            const next = safeReturnPath(call.fields.next);
+            const action = (call.fields.action ?? 'confirm').trim();
+            if (!email) {
+              res.writeHead(400, { 'content-type': 'text/html; charset=utf-8' });
+              res.end(
+                verifyEmailCodePage(call.csrf ?? '', {
+                  error: 'Enter the address you signed up with.',
+                  next,
+                }),
+              );
+              return;
+            }
+            if (!rateOk(`verify:${ip ?? '-'}:${tenant}`, LOGIN_RATE.limit, LOGIN_RATE.windowMs, Date.parse(at))) {
+              const shape = formErrorShape('rate-limited');
+              res.writeHead(shape.status, { 'content-type': 'text/html; charset=utf-8' });
+              res.end(
+                verifyEmailCodePage(call.csrf ?? '', {
+                  error: `${shape.message} — the code you already have still works.`,
+                  email,
+                  next,
+                }),
+              );
+              return;
+            }
+            try {
+              if (action === 'resend') {
+                await cognitoResendConfirmationCode(cognito, { email });
+                res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+                res.end(
+                  verifyEmailCodePage(call.csrf ?? '', {
+                    notice: `A new code is on its way to ${email}.`,
+                    email,
+                    next,
+                  }),
+                );
+                return;
+              }
+              await cognitoConfirmSignUp(cognito, { email, code: (call.fields.code ?? '').trim() });
+              if (await sessionOf()) return redirect(res, home);
+              res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+              res.end(
+                page(
+                  'Vital Console: email confirmed',
+                  `<h1>Email confirmed</h1><p class="sub">${esc(email)} is ready to sign in.</p><p class="sub"><a href="/login${next ? `?next=${encodeURIComponent(next)}` : ''}">Sign in</a></p>`,
+                ),
+              );
+              return;
+            } catch (e) {
+              // A stale code or a throttled send is the user's to act on; an
+              // unreachable pool is not, and neither may look like the other.
+              const unreachable =
+                e instanceof CognitoError && ['IDP_DOWN', 'NO_CREDENTIALS', 'CREDENTIALS_UNREACHABLE'].includes(e.code);
+              const message =
+                e instanceof CognitoError
+                  ? e.message.replace(/^\[cognito:[^\]]+\]\s*/, '')
+                  : 'that code could not be checked — try again';
+              res.writeHead(unreachable ? 503 : 400, { 'content-type': 'text/html; charset=utf-8' });
+              res.end(verifyEmailCodePage(call.csrf ?? '', { error: message, email, next }));
+              return;
+            }
           }
           if (path === '/account/password' && method === 'POST') {
             const auth = await sessionOf();

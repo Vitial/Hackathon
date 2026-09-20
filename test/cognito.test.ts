@@ -4,6 +4,8 @@ import type { Server } from 'node:http';
 import {
   cognitoFromEnv,
   cognitoSignUp,
+  cognitoConfirmSignUp,
+  cognitoResendConfirmationCode,
   cognitoVerifyPassword,
   resolveCognitoCredentials,
   signCognitoRequest,
@@ -193,6 +195,65 @@ T('pool errors map to named codes, never raw bodies', async () => {
   );
 });
 
+T('cognitoConfirmSignUp: the code goes to ConfirmSignUp, and its refusals stay named', async () => {
+  const calls: Array<{ url: string; init: { method: string; headers: Record<string, string>; body: string } }> = [];
+  const r = await cognitoConfirmSignUp(
+    CFG,
+    { email: 'ada@example.com', code: '151676' },
+    { creds: CREDS, fetchFn: stubFetch(calls, () => ({ status: 200, body: '{}' })), now: () => FIXED_NOW },
+  );
+  eq(r.confirmed, true);
+  const sent = JSON.parse(calls[0]!.init.body) as Record<string, unknown>;
+  eq(sent.ClientId, 'client123');
+  // Username is the address: the pool names email as its sign-in attribute.
+  eq(sent.Username, 'ada@example.com');
+  eq(sent.ConfirmationCode, '151676');
+  eq(calls[0]!.init.headers['x-amz-target'], 'AWSCognitoIdentityProviderService.ConfirmSignUp');
+
+  const mk = (status: number, type: string) =>
+    stubFetch([], () => ({ status, body: JSON.stringify({ __type: type }) }));
+  const opts = (f: CognitoFetchFn) => ({ creds: CREDS, fetchFn: f, now: () => FIXED_NOW });
+  await rejects(
+    () => cognitoConfirmSignUp(CFG, { email: 'a@b.co', code: '000000' }, opts(mk(400, 'CodeMismatchException'))),
+    'cognito:CODE_MISMATCH',
+  );
+  await rejects(
+    () => cognitoConfirmSignUp(CFG, { email: 'a@b.co', code: '000000' }, opts(mk(400, 'ExpiredCodeException'))),
+    'cognito:CODE_EXPIRED',
+  );
+  // NotAuthorizedException means two different things by operation: "already
+  // confirmed" here, "wrong credentials" at login. One status, two codes.
+  await rejects(
+    () => cognitoConfirmSignUp(CFG, { email: 'a@b.co', code: '000000' }, opts(mk(400, 'NotAuthorizedException'))),
+    'cognito:ALREADY_CONFIRMED',
+  );
+  await rejects(
+    () => cognitoVerifyPassword(CFG, { email: 'a@b.co', password: 'x' }, opts(mk(400, 'NotAuthorizedException'))),
+    'cognito:BAD_CREDENTIALS',
+  );
+});
+
+T('cognitoResendConfirmationCode asks the pool for a fresh code, throttle included', async () => {
+  const calls: Array<{ url: string; init: { method: string; headers: Record<string, string>; body: string } }> = [];
+  await cognitoResendConfirmationCode(
+    CFG,
+    { email: 'ada@example.com' },
+    { creds: CREDS, fetchFn: stubFetch(calls, () => ({ status: 200, body: '{}' })), now: () => FIXED_NOW },
+  );
+  eq(calls[0]!.init.headers['x-amz-target'], 'AWSCognitoIdentityProviderService.ResendConfirmationCode');
+  eq((JSON.parse(calls[0]!.init.body) as Record<string, unknown>).Username, 'ada@example.com');
+  const throttled = stubFetch([], () => ({ status: 400, body: JSON.stringify({ __type: 'LimitExceededException' }) }));
+  await rejects(
+    () =>
+      cognitoResendConfirmationCode(
+        CFG,
+        { email: 'a@b.co' },
+        { creds: CREDS, fetchFn: throttled, now: () => FIXED_NOW },
+      ),
+    'cognito:THROTTLED',
+  );
+});
+
 T('a successful verify without tokens is refused, not half-trusted', async () => {
   const fetchFn = stubFetch([], () => ({ status: 200, body: '{"AuthenticationResult":{}}' }));
   await rejects(
@@ -218,11 +279,17 @@ T('credentials: static env wins; nothing configured refuses loudly', async () =>
 interface PoolAccount {
   email: string;
   password: string;
+  confirmed: boolean;
+  /** the code the pool would have emailed; rotated by ResendConfirmationCode */
+  code?: string;
 }
 
 /** A tiny stand-in for the cognito-idp JSON endpoint (same wire shape). */
-async function startMockPool(): Promise<{ server: Server; accounts: PoolAccount[]; port: number }> {
+async function startMockPool(
+  opts: { requireConfirmation?: boolean } = {},
+): Promise<{ server: Server; accounts: PoolAccount[]; port: number }> {
   const accounts: PoolAccount[] = [];
+  const firstCode = '151676';
   const server = createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
@@ -238,13 +305,49 @@ async function startMockPool(): Promise<{ server: Server; accounts: PoolAccount[
         if (accounts.some((a) => a.email === email)) {
           return reply(400, { __type: 'UsernameExistsException', message: 'prelogin' });
         }
-        accounts.push({ email, password: String(body.Password) });
-        return reply(200, { UserConfirmed: true, UserSub: `sub-${email}` });
+        const confirm = Boolean(opts.requireConfirmation);
+        accounts.push({
+          email,
+          password: String(body.Password),
+          confirmed: !confirm,
+          ...(confirm ? { code: firstCode } : {}),
+        });
+        // The real pool answers UserConfirmed: false and mails a code whenever
+        // confirmation is required — which is the case this lane exists for.
+        return reply(
+          200,
+          confirm
+            ? {
+                UserConfirmed: false,
+                UserSub: `sub-${email}`,
+                CodeDeliveryDetails: { Destination: 'a***@e***', DeliveryMedium: 'EMAIL', AttributeName: 'email' },
+              }
+            : { UserConfirmed: true, UserSub: `sub-${email}` },
+        );
+      }
+      if (target.endsWith('.ConfirmSignUp')) {
+        const email = String(body.Username);
+        const acct = accounts.find((a) => a.email === email);
+        if (!acct) return reply(400, { __type: 'UserNotFoundException', message: 'user' });
+        if (acct.confirmed) return reply(400, { __type: 'NotAuthorizedException', message: 'already' });
+        if (acct.code && String(body.ConfirmationCode) !== acct.code)
+          return reply(400, { __type: 'CodeMismatchException', message: 'mismatch' });
+        acct.confirmed = true;
+        return reply(200, {});
+      }
+      if (target.endsWith('.ResendConfirmationCode')) {
+        const email = String(body.Username);
+        const acct = accounts.find((a) => a.email === email);
+        if (!acct) return reply(400, { __type: 'UserNotFoundException', message: 'user' });
+        // Rotated, so a test can prove the resend actually reached the pool.
+        acct.code = '151677';
+        return reply(200, { CodeDeliveryDetails: { DeliveryMedium: 'EMAIL', AttributeName: 'email' } });
       }
       if (target.endsWith('.InitiateAuth')) {
         const p = body.AuthParameters as { USERNAME: string; PASSWORD: string };
         const acct = accounts.find((a) => a.email === p.USERNAME);
         if (!acct) return reply(400, { __type: 'UserNotFoundException', message: 'user' });
+        if (!acct.confirmed) return reply(400, { __type: 'UserNotConfirmedException', message: 'unconfirmed' });
         if (acct.password !== p.PASSWORD) return reply(400, { __type: 'NotAuthorizedException', message: 'nope' });
         return reply(200, { AuthenticationResult: { AccessToken: 'at', IdToken: 'it' } });
       }
@@ -388,6 +491,103 @@ T('pool outage is reported honestly and never fakes an account', async () => {
     else eq(loginRes.status === 401 || loginRes.status === 503, true);
   } finally {
     await server?.close();
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    await db.close();
+  }
+});
+
+T('confirmation lane: sign-up mails a code, /verify-email collects it, and only then does sign-in work', async () => {
+  const mock = await startMockPool({ requireConfirmation: true });
+  const saved = { ...process.env };
+  process.env.VITAL_COGNITO_USER_POOL_ID = 'us-east-1_MOCK';
+  process.env.VITAL_COGNITO_CLIENT_ID = 'mockclient';
+  process.env.VITAL_COGNITO_ENDPOINT = `http://127.0.0.1:${mock.port}`;
+  process.env.AWS_ACCESS_KEY_ID = 'AKIDTEST';
+  process.env.AWS_SECRET_ACCESS_KEY = 'secret-test-123';
+  const { db, ledger, coord, comp } = await fresh();
+  let server;
+  try {
+    server = await startConsoleServer(db, ledger, coord, comp, { tenant: TEN, host: '127.0.0.1', port: 0 });
+    const url = `http://127.0.0.1:${server.port}`;
+    const account = () => mock.accounts.find((a) => a.email === 'ada@example.com')!;
+
+    // 1. Sign-up lands UNCONFIRMED in the pool and the response says so, with
+    //    the route that finishes it — the piece that was missing.
+    const offer = (await (await fetch(`${url}/api/signup`)).json()) as { csrf: string };
+    const signup = (await (
+      await fetch(`${url}/api/signup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-vital-csrf': offer.csrf, cookie: `vital_csrf=${offer.csrf}` },
+        body: JSON.stringify({
+          firstName: 'Ada',
+          lastName: 'Lovelace',
+          email: 'ada@example.com',
+          password: 'Calcograph-1843-x',
+        }),
+      })
+    ).json()) as { ok: boolean; confirmationRequired: boolean; verifyPath: string };
+    eq(signup.ok, true);
+    eq(signup.confirmationRequired, true);
+    eq(signup.verifyPath, '/verify-email?email=ada%40example.com');
+    eq(account().confirmed, false);
+
+    // 2. Sign-in is refused honestly *and* points at the code step: an
+    //    unconfirmed account used to be an error with no way forward.
+    const refused = await (
+      await fetch(`${url}/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-vital-csrf': offer.csrf, cookie: `vital_csrf=${offer.csrf}` },
+        redirect: 'manual',
+        body: JSON.stringify({ email: 'ada@example.com', password: 'Calcograph-1843-x' }),
+      })
+    ).text();
+    eq(refused.includes('Enter the code we emailed you'), true);
+    eq(refused.includes('/verify-email?email=ada%40example.com'), true);
+
+    // 3. The code page is a real form on its own CSRF cookie.
+    const get = await fetch(`${url}/verify-email?email=ada%40example.com`);
+    const cookie = get.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const html = await get.text();
+    eq(html.includes('name="code"'), true);
+    eq(html.includes('value="ada@example.com"'), true);
+    const csrf = html.match(/name="csrf" value="([0-9a-f]+)"/)![1]!;
+    const postForm = (body: string) =>
+      fetch(`${url}/verify-email`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie },
+        body,
+      });
+
+    // 4. A wrong code is answered as a wrong code, not as an outage — and it
+    //    does not confirm anything.
+    const wrong = await postForm(`csrf=${csrf}&email=ada%40example.com&action=confirm&code=000000`);
+    eq(wrong.status, 400);
+    eq((await wrong.text()).includes('not the one we sent'), true);
+    eq(account().confirmed, false);
+
+    // 5. Resend rotates the code, which proves the call reached the pool.
+    const resent = await postForm(`csrf=${csrf}&email=ada%40example.com&action=resend`);
+    eq(resent.status, 200);
+    eq((await resent.text()).includes('A new code is on its way'), true);
+    eq(account().code, '151677');
+
+    // 6. The live code confirms, and only now does the password sign in.
+    const confirmed = await postForm(`csrf=${csrf}&email=ada%40example.com&action=confirm&code=${account().code}`);
+    eq(confirmed.status, 200);
+    eq((await confirmed.text()).includes('is ready to sign in'), true);
+    eq(account().confirmed, true);
+    const offer2 = (await (await fetch(`${url}/api/signup`)).json()) as { csrf: string };
+    const login = await fetch(`${url}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-vital-csrf': offer2.csrf, cookie: `vital_csrf=${offer2.csrf}` },
+      redirect: 'manual',
+      body: JSON.stringify({ email: 'ada@example.com', password: 'Calcograph-1843-x' }),
+    });
+    eq(login.status, 303);
+  } finally {
+    await server?.close();
+    mock.server.close();
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);
     await db.close();

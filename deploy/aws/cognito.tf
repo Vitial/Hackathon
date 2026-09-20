@@ -8,12 +8,14 @@
 resource "aws_cognito_user_pool" "public" {
   name                = "${local.name}-public"
   username_attributes = ["email"]
-  # Verified on sign-up without an email round-trip, because a verified
-  # attribute is what lets the pool hand back a session immediately: the
-  # console owns the account row and its password policy, and the funnel is
-  # meant to be one step. `auto_verified_attributes` is the pool argument's
-  # name — the SignUp API's `email_verified` attribute is admin-only and is
-  # deliberately not sent (see src/console/cognito.ts).
+  # What becomes verified *when* a confirmation code is confirmed. It does not
+  # confirm a public SignUp on its own: the deployed pool answers
+  # UserConfirmed: false and mails a code (verified against this pool), so the
+  # console collects that code on /verify-email via cognitoConfirmSignUp and
+  # the address is verified at that moment. No pool argument skips the step —
+  # the alternatives are admin-created accounts or nothing. The SignUp API's
+  # `email_verified` attribute is admin-only and is deliberately not sent (see
+  # src/console/cognito.ts).
   auto_verified_attributes = ["email"]
   mfa_configuration        = "OFF"
 

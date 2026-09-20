@@ -170,7 +170,18 @@
         if (emailEl) emailEl.textContent = j.email || email;
         if (j.confirmationRequired) {
           const note = document.querySelector('#signup-success .console-target');
-          if (note) note.textContent = '● account created · check your email to confirm it before signing in';
+          if (note) {
+            // The pool will not hand back a session until the emailed code is
+            // confirmed, and only the console can call the pool: link to its
+            // step rather than telling the signer to "check your email" with
+            // nowhere to put the code. Built from elements, not markup — the
+            // address is user input.
+            const link = document.createElement('a');
+            link.href = (consoleBase || '') + (j.verifyPath || '/verify-email?email=' + encodeURIComponent(email));
+            link.textContent = 'enter the code we emailed you';
+            note.textContent = '● account created · ';
+            note.append(link, ' to finish signing in');
+          }
         }
         ['success-credits', 'success-credits-2'].forEach((id) => {
           const el = document.getElementById(id);

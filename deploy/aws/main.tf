@@ -627,9 +627,17 @@ resource "aws_iam_policy" "ecs_task" {
       ] },
       { Effect = "Allow", Action = ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"], Resource = [aws_sqs_queue.requests.arn] },
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = ["${aws_cloudwatch_log_group.core.arn}:*"] },
-      # Public sign-up funnel: the console signs up / verifies against the
-      # user pool with these task-role permissions (SigV4 in cognito.ts).
-      { Effect = "Allow", Action = ["cognito-idp:SignUp", "cognito-idp:InitiateAuth"], Resource = [aws_cognito_user_pool.public.arn] }
+      # Public sign-up funnel: the console signs up, collects the emailed
+      # confirmation code, and verifies passwords against the user pool with
+      # these task-role permissions (SigV4 in cognito.ts). ConfirmSignUp is the
+      # one the funnel cannot work without: SignUp answers UserConfirmed: false
+      # on this pool, so the account stays unusable until the code is confirmed.
+      { Effect = "Allow", Action = [
+        "cognito-idp:SignUp",
+        "cognito-idp:ConfirmSignUp",
+        "cognito-idp:ResendConfirmationCode",
+        "cognito-idp:InitiateAuth"
+      ], Resource = [aws_cognito_user_pool.public.arn] }
     ]
   })
 }

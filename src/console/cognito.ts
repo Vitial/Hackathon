@@ -220,12 +220,13 @@ function errorTypeOf(status: number, body: string): string {
   return type.split('#').pop() ?? '';
 }
 
-function mapError(status: number, body: string, op: string): CognitoError {
+function mapError(status: number, body: string, op: string, kind?: 'confirm' | 'resend'): CognitoError {
   const type = errorTypeOf(status, body);
   // Bodies can carry user-supplied context; codes are the safe surface.
   const msg = `cognito ${op} failed (${status}${type ? ` ${type}` : ''})`;
   switch (type) {
     case 'UsernameExistsException':
+    case 'AliasExistsException':
       return new CognitoError('USER_EXISTS', 'an account with this email already exists in the user pool');
     case 'UserNotFoundException':
       return new CognitoError('USER_NOT_FOUND', 'no such account in the user pool');
@@ -233,8 +234,18 @@ function mapError(status: number, body: string, op: string): CognitoError {
       return new CognitoError('WEAK_PASSWORD', 'the user pool rejected this password (check its policy)');
     case 'InvalidParameterException':
       return new CognitoError('BAD_REQUEST', 'the user pool rejected the request parameters');
+    case 'CodeMismatchException':
+      return new CognitoError('CODE_MISMATCH', 'that code is not the one we sent');
+    case 'ExpiredCodeException':
+      return new CognitoError('CODE_EXPIRED', 'that code has expired — send a new one');
     case 'NotAuthorizedException':
-      return new CognitoError('BAD_CREDENTIALS', 'invalid credentials');
+      // The same status means two different things by operation: wrong
+      // credentials at login, and "User cannot be confirmed. Current status is
+      // CONFIRMED" at ConfirmSignUp. A wrong *code* answers CodeMismatch, so on
+      // the confirm path this can only be an account that is already done.
+      return kind === 'confirm'
+        ? new CognitoError('ALREADY_CONFIRMED', 'this account is already confirmed — sign in')
+        : new CognitoError('BAD_CREDENTIALS', 'invalid credentials');
     case 'UserNotConfirmedException':
       return new CognitoError('UNCONFIRMED', 'the account still needs email confirmation');
     case 'PasswordResetRequiredException':
@@ -258,6 +269,7 @@ async function call(
   payload: Record<string, unknown>,
   fetchFn: CognitoFetchFn,
   now: () => Date,
+  kind?: 'confirm' | 'resend',
 ): Promise<Record<string, unknown>> {
   const body = JSON.stringify(payload);
   const { url, headers } = signCognitoRequest({ cfg, creds, target, body, now: now() });
@@ -267,7 +279,8 @@ async function call(
   } catch (e) {
     throw new CognitoError('IDP_DOWN', `the identity provider is unreachable right now (${(e as Error).message})`);
   }
-  if (res.status < 200 || res.status >= 300) throw mapError(res.status, res.body, target.split('.').pop() ?? target);
+  if (res.status < 200 || res.status >= 300)
+    throw mapError(res.status, res.body, target.split('.').pop() ?? target, kind);
   if (!res.body) return {};
   try {
     return JSON.parse(res.body) as Record<string, unknown>;
@@ -289,8 +302,10 @@ export async function cognitoSignUp(
 ): Promise<SignUpResult> {
   const creds = opts.creds ?? (await resolveCognitoCredentials(opts.env));
   // email_verified is an admin-scope attribute: the SignUp API refuses it, so
-  // confirmation comes from the pool's "sign-in without verifying email"
-  // setting (Terraform: auto_verified_attributes = ["email"]).
+  // the pool's auto_verified_attributes = ["email"] marks the address verified
+  // when the code is confirmed. Sign-up therefore comes back
+  // UserConfirmed: false and the console collects the code on /verify-email
+  // (cognitoConfirmSignUp below) — there is no pool setting that skips it.
   const userAttributes = [{ Name: 'email', Value: input.email }];
   if (input.givenName) userAttributes.push({ Name: 'given_name', Value: input.givenName });
   if (input.familyName) userAttributes.push({ Name: 'family_name', Value: input.familyName });
@@ -304,6 +319,55 @@ export async function cognitoSignUp(
   );
   const sub = (j.UserSub as string) ?? '';
   return { sub, userConfirmed: Boolean(j.UserConfirmed) };
+}
+
+/**
+ * Confirm the pool account with the code Cognito emailed at sign-up.
+ *
+ * `Username` is the address because the pool names email as its sign-in
+ * attribute (Terraform: username_attributes = ["email"]); the console never
+ * sees the pool's internal username. Confirming is what sets
+ * `email_verified=true`, which is why auto_verified_attributes exists there.
+ */
+export async function cognitoConfirmSignUp(
+  cfg: CognitoConfig,
+  input: { email: string; code: string },
+  opts: { fetchFn?: CognitoFetchFn; creds?: CognitoCredentials; env?: NodeJS.ProcessEnv; now?: () => Date } = {},
+): Promise<{ confirmed: boolean }> {
+  const creds = opts.creds ?? (await resolveCognitoCredentials(opts.env));
+  await call(
+    cfg,
+    creds,
+    'AWSCognitoIdentityProviderService.ConfirmSignUp',
+    { ClientId: cfg.clientId, Username: input.email, ConfirmationCode: input.code },
+    opts.fetchFn ?? nodeCognitoFetch,
+    opts.now ?? (() => new Date()),
+    'confirm',
+  );
+  return { confirmed: true };
+}
+
+/**
+ * Send a fresh confirmation code, for the two ways the first one is lost: it
+ * expired, or it never arrived. The pool rate-limits this per account, and a
+ * throttled answer is `CognitoError('THROTTLED')` — the page says "try again
+ * later" rather than claiming a send that did not happen.
+ */
+export async function cognitoResendConfirmationCode(
+  cfg: CognitoConfig,
+  input: { email: string },
+  opts: { fetchFn?: CognitoFetchFn; creds?: CognitoCredentials; env?: NodeJS.ProcessEnv; now?: () => Date } = {},
+): Promise<void> {
+  const creds = opts.creds ?? (await resolveCognitoCredentials(opts.env));
+  await call(
+    cfg,
+    creds,
+    'AWSCognitoIdentityProviderService.ResendConfirmationCode',
+    { ClientId: cfg.clientId, Username: input.email },
+    opts.fetchFn ?? nodeCognitoFetch,
+    opts.now ?? (() => new Date()),
+    'resend',
+  );
 }
 
 export interface VerifyResult {
