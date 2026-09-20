@@ -206,7 +206,7 @@ T('FLOW-026 source: content is not gated by scripts or animation loops', () => {
   assert.match(html, /<script src="app.js" defer><\/script>/);
   assert.match(
     html,
-    /data-cta="pilot-walkthrough" href="mailto:hello@vital.company\?subject=Vital%20pilot%20walkthrough"/,
+    /data-cta="pilot-walkthrough" href="mailto:support@elitefolks.com\?subject=Vital%20pilot%20walkthrough"/,
   );
 });
 
