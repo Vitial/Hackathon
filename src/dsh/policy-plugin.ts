@@ -37,21 +37,36 @@ export interface PolicyEnforcement {
 
 const yamlSingleQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`;
 
-export function buildPolicyPatch(pluginPath: string): string {
+/**
+ * The standard Vital patch: the in-runtime approval answerer plus the
+ * governance preamble section. Mounted per run by DshRunner (both lanes);
+ * opt out with DSH_NO_DEFAULT_PLUGINS=1.
+ *
+ * Never a `system-prompt` service-config row: patch config replaces the
+ * profile's own persona, while section registration is purely additive.
+ */
+export function buildVitalPatch(approvalPluginPath: string, governancePluginPath: string): string {
   return (
     `# Generated per run by DshRunner (src/dsh/policy-plugin.ts); do not edit.\n` +
-    `# Mounts the Vital approval answerer onto the sdk profile's approval\n` +
-    `# service. The snapshot path needs no channel: the plugin derives it\n` +
-    `# from each approval request's session id.\n` +
+    `# Vital default plugins over the sdk profile: the approval answerer\n` +
+    `# (snapshot path derived per request, no channel needed) and the\n` +
+    `# governance preamble section.\n` +
     `- insert:\n` +
     `    - id: vital-approval\n` +
-    `      name: ${yamlSingleQuote(pluginPath)}\n` +
-    `      inject: [approval]\n`
+    `      name: ${yamlSingleQuote(approvalPluginPath)}\n` +
+    `      inject: [approval]\n` +
+    `    - id: vital-governance\n` +
+    `      name: ${yamlSingleQuote(governancePluginPath)}\n` +
+    `      inject: [systemPrompt]\n`
   );
 }
 
 export function vitalApprovalPluginPath(): string {
   return fileURLToPath(new URL('./vital-approval.mjs', import.meta.url));
+}
+
+export function vitalGovernancePluginPath(): string {
+  return fileURLToPath(new URL('./vital-governance.mjs', import.meta.url));
 }
 
 export async function preparePolicyEnforcement(
@@ -67,8 +82,8 @@ export async function preparePolicyEnforcement(
   // The snapshot MUST live where the plugin looks: the shared policy dir,
   // not the per-run dir (the plugin derives dir + per-session filename).
   const snapshotPath = writePolicySnapshot(dir, snapshot);
-  const patchPath = join(runDir, 'vital-approval.patch.yml');
-  writeFileSync(patchPath, buildPolicyPatch(vitalApprovalPluginPath()), 'utf8');
+  const patchPath = join(runDir, 'vital.patch.yml');
+  writeFileSync(patchPath, buildVitalPatch(vitalApprovalPluginPath(), vitalGovernancePluginPath()), 'utf8');
   return {
     dir: runDir,
     snapshotPath,
@@ -85,5 +100,9 @@ export async function preparePolicyEnforcement(
 }
 
 export function policyPluginEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.DSH_POLICY_PLUGIN === '1';
+  // Default plugins mount on every harnessed turn (mount + handshake
+  // verified; approval decisions unit-tested; the parent gate stays
+  // authoritative regardless). Opt out only to isolate a suspect plugin.
+  if (env.DSH_NO_DEFAULT_PLUGINS === '1') return false;
+  return true;
 }

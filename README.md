@@ -31,7 +31,7 @@ The single source of truth for the project specification is [`idea.md`](idea.md)
   - [5. Governance & The R/A/I Autonomy Matrix](#5-governance--the-rai-autonomy-matrix)
   - [6. World Sense & Adversarial Integrity Gate](#6-world-sense--adversarial-integrity-gate)
   - [7. Talk Surface & Cryptographic Identities](#7-talk-surface--cryptographic-identities)
-  - [8. Substrate, Sandboxes & jcode Integration](#8-substrate-sandboxes--jcode-integration)
+  - [8. Substrate, Sandboxes & Harness Integration](#8-substrate-sandboxes--harness-integration)
 - [User Surfaces: Web Console & Marketing Site](#user-surfaces-web-console--marketing-site)
 - [Project Directory & Codebase Map](#project-directory--codebase-map)
 - [5-Minute Quickstart & Boot Guide](#5-minute-quickstart--boot-guide)
@@ -67,7 +67,7 @@ Companies have information systems (GitHub, CRM, Slack, Datadog, Jira), but no *
 - They **repeat intelligence** on problems the organization has already solved.
 - They take **actions nobody can attribute, replay, or reverse**.
 
-Vital implements a mathematically verified runtime layer above agent harnesses (such as [jcode](https://github.com/1jehuang/jcode) and [QM](https://github.com/yc-software/qm)) and chat transports (such as [Buzz](https://buzz.xyz) or Slack):
+Vital implements a mathematically verified runtime layer above agent harnesses (such as [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) and [QM](https://github.com/yc-software/qm)) and chat transports (such as [Buzz](https://buzz.xyz) or Slack):
 
 $$\text{North Star Metric} = \frac{\text{Total Intelligence Cost}}{\text{Verified Good Decisions}} \quad (\searrow \text{decreasing over time})$$
 
@@ -93,7 +93,7 @@ a persistent, named teammate on its own cloud computer (browser, filesystem, ter
 
 Slack (or Buzz/Nostr) is the *talk layer* — where humans and agents coordinate visibly. Grok Bot's threads are the system of record in that design.
 
-Vital is the **governance layer above any harness** (jcode, QM, Grok Bot) **and any talk surface** (Buzz, Slack). You can run Grok Bot *as* the harness under Vital — Vital still enforces what Grok Bot alone does not document.
+Vital is the **governance layer above any harness** (dsh, QM, Grok Bot) **and any talk surface** (Buzz, Slack). You can run Grok Bot *as* the harness under Vital — Vital still enforces what Grok Bot alone does not document.
 
 | Capability | Grok Bot + Slack (as documented) | Vital (this repo, enforced in code) |
 | :--- | :--- | :--- |
@@ -102,7 +102,7 @@ Vital is the **governance layer above any harness** (jcode, QM, Grok Bot) **and 
 | **Does “learning” rot?** | “Bots keep memory and learn from each other” — no documented quarantine or cross-model/role transfer test before reuse. | **Organizational Compiler** (`src/compiler/compiler.ts`): `QUARANTINE → SHADOW → BOUNDED_PILOT → PROMOTED` with **cross-model + cross-role transfer tests + EWMA drift auto-demotion**. Imported `SKILL.md` packs enter at `QUARANTINE` by design. |
 | **Who approved what, on what basis, at what second?** | Chat thread is the audit trail; approvals are messages. No frozen claim-hashes at decision time documented. | **Context Bundles** (`src/ledger/ledger.ts`) freeze exact claim IDs/versions/hashes at decision seconds; `decisionId` replays years later. `R/A/I` matrix (`src/gov/trust.ts`) + **honeytasks** catch rubber-stamping; freezes autonomy. |
 | **Reversible vs irreversible?** | Bots “use your apps just like you do” including irreversible tools; approval is a chat reply. | **R/A/I Autonomy Matrix** (`READ | ANALYZE | RECOMMEND | ACT_REVERSIBLE | ACT_IRREVERSIBLE` where `ACT_IRREVERSIBLE` is *never autonomous in Year 1*). Scoped sandboxes + egress proxy (`src/substrate/`). |
-| **If the harness changes, does truth survive?** | Harness and chat are the system. Swap Grok Bot for another harness and history is chat logs. | **Ledger is the only store** (`src/talk/surface.ts` HMAC/Buzz binding, `idea.md` §3): swap Buzz→Slack or jcode→Grok Bot with **zero ledger change** — proven by `src/talk/surface.ts` `TalkSurface` swappability spike. |
+| **If the harness changes, does truth survive?** | Harness and chat are the system. Swap Grok Bot for another harness and history is chat logs. | **Ledger is the only store** (`src/talk/surface.ts` HMAC/Buzz binding, `idea.md` §3): swap Buzz→Slack or dsh→Grok Bot with **zero ledger change** — proven by `src/talk/surface.ts` `TalkSurface` swappability spike. |
 | **Chat itself** | Polished chat (threads, group chats, @-mentions, shared computer). | **Same chat UX** (`buzz/` → Image 1: avatar stream, Linear card, ✅ 1 🚀 2, `@` autocomplete, `Message #engineering` composer) but every message is **grounded**: claim chips, `derived_from` links, and `[HUMAN ATTENTION REQUIRED]` cards that cannot be approved by reacting. |
 
 > **Bottom line:** Grok Bot is the best *hands* (persistent computer + multi-tool use + bot-to-bot handoffs). Slack is the best *mouth* (threads). Vital is the **memory + conscience + budget office** that makes hands and mouth safe for production: without it, chat *is* the ledger, loops are unbounded, and learning is a vector-store append.
@@ -140,7 +140,7 @@ flowchart TD
 
     subgraph GOV["Governance & Execution (R/A/I Matrix)"]
         Tier1 & Tier2 & Tier3 --> RAI{"R/A/I Policy Check\nREAD | ANALYZE | RECOMMEND\nACT_REVERSIBLE | ACT_IRREVERSIBLE"}
-        RAI -->|Autonomous| Sandboxes["Scoped Sandboxes & Harnesses\n(jcode / Substrate / Egress Proxy)"]
+        RAI -->|Autonomous| Sandboxes["Scoped Sandboxes & Harnesses\n(dsh / Substrate / Egress Proxy)"]
         RAI -->|Requires Approval| HumanRev["Console & Buzz Approval Queue\n(Attributed Identity, Honeytasks)"]
         HumanRev -->|Approved| Sandboxes
         HumanRev -->|Declined| LogRefusal["Logged Refusal Event"]
@@ -159,7 +159,7 @@ flowchart TD
 ### The Three Fundamental Layers
 
 1. **The Talk Layer ([Buzz](https://buzz.xyz) / Nostr / Slack):** Where humans and agents coordinate visibly with cryptographic signatures. A channel is a *projection*, never the store of record.
-2. **The Compute Layer (Substrate + [jcode](https://github.com/1jehuang/jcode)):** Ephemeral sandboxes where tools execute under strict network egress proxies and command policies.
+2. **The Compute Layer (Substrate + [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)):** Ephemeral sandboxes where tools execute under strict network egress proxies and command policies.
 3. **The Claim Layer (The Reality Ledger):** What is true, what is believed, and what was decided. The **only** place claims live.
 
 ---
@@ -378,12 +378,12 @@ Located in `src/talk/`. Implemented for [Buzz](https://buzz.xyz) (Nostr-based pr
 
 ---
 
-### 8. Substrate, Sandboxes & jcode Integration
+### 8. Substrate, Sandboxes & Harness Integration
 
-Located in `src/substrate/` and `src/jcode/`.
+Located in `src/substrate/`, `src/dsh/` (and legacy `src/jcode/`).
 - **Manifest-Rebuildable Sandboxes:** Sandboxes contain tools and temporary files, but persistence is never trust-bearing. A compromised sandbox can be destroyed and rebuilt from an immutable manifest in seconds.
 - **Egress Policy:** every model and outbound decision passes one decision core (`src/substrate/egress.ts`) that denies non-allowlisted domains and blocks loopback and cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`). A forward proxy that enforces the same policy for a sandbox (`src/substrate/egress-proxy.ts`) is implemented and tested, but **no deployment starts it yet** — sandboxes are not pointed at it, so enforcement happens at the decision call rather than at the socket. Disposition in AUDIT.md §5.
-- **jcode Integration:** Vital communicates with [jcode](https://github.com/1jehuang/jcode) (1,198 Rust files) as a sibling process over the Harness-API protocol (NDJSON over Unix sockets) rather than embedding it as an internal library. Permission requests stream back to Vital's R/A/I policy engine, ensuring agents cannot grant themselves permissions.
+- **dsh Integration:** Vital drives [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (vendored in-tree at `vendor/deepseek-harness/`, MIT) as an SDK-runtime child process over stdio JSON-RPC (`dsh --profile sdk`). Tool calls are gated by Vital's R/A/I policy engine — client-side per-turn, plus an in-runtime approval-answerer plugin (`src/dsh/vital-approval.mjs`) mounted via `--patch` — ensuring agents cannot grant themselves permissions. The jcode sibling integration (`src/jcode/`, NDJSON over Unix sockets) is superseded but retained until the dsh adapter is proven.
 
 ---
 
@@ -484,10 +484,15 @@ Hackathon/
 │   │   ├── egress-proxy.ts      # SSRF & cloud metadata endpoint blocking proxy
 │   │   ├── harness.ts           # Harness adapter contracts
 │   │   └── sandbox.ts           # Manifest-rebuildable execution environments
-│   ├── jcode/                   # jcode sibling process client (Harness-API NDJSON)
-│   │   ├── client.ts            # Socket protocol client & error-frame isolation
-│   │   ├── protocol.ts          # Protocol v1 frame definitions
-│   │   └── runner.ts            # Permission request streaming & Ledger writeback
+│   ├── dsh/                     # dsh SDK-runtime adapter (stdio JSON-RPC)
+│   │   ├── client.ts            # SDK wire client & session-event mapping
+│   │   ├── runner.ts            # Governed run: policy gate, budget, Ledger writeback
+│   │   ├── adapter.ts           # HarnessAdapter implementation
+│   │   ├── policy-snapshot.ts   # Frozen policy core for the in-runtime answerer
+│   │   ├── policy-plugin.ts     # Per-run snapshot + --patch overlay generator
+│   │   ├── launch.ts            # DSH_* env -> client options
+│   │   └── vital-approval.mjs   # In-runtime approval-answerer Cordis plugin
+│   ├── jcode/                   # Legacy jcode sibling client (superseded, retained)
 │   ├── talk/                    # Talk Surface (Buzz / Nostr / Slack cryptographic bindings)
 │   │   ├── buzz-runtime.ts      # Real-time room thread updates
 │   │   ├── surface.ts           # Cryptographic signature to claim binding
@@ -506,6 +511,7 @@ Hackathon/
 ├── test/                        # Full test suite (739 tests, real sockets, real sqlite)
 │   ├── run.ts                   # Master test runner
 │   ├── fake-harness.ts          # Real socket server for jcode protocol testing
+│   ├── fake-dsh-runtime.mjs      # Fake stdio JSON-RPC server for dsh SDK-wire testing
 │   └── *.test.ts                # Unit and integration test files
 ├── scripts/                     # Operational verification & maintenance utilities
 │   ├── refresh-docs.mjs         # Test-count freshness synchronizer
@@ -541,7 +547,7 @@ npm install
 # Verify TypeScript type safety (must be 0 errors)
 npm run typecheck
 
-# Run the complete test suite (<!-- vital:testcount -->952/952 tests green<!-- /vital:testcount -->)
+# Run the complete test suite (<!-- vital:testcount -->958/958 tests green<!-- /vital:testcount -->)
 npm test
 ```
 
@@ -575,7 +581,7 @@ npx tsx src/cli.ts signup --db var/vital.db --tenant acme \
 
 ### 3. Running with In-Process Application Worker
 
-To execute scheduled background tasks, jcode coordination, and Buzz room progress streaming:
+To execute scheduled background tasks, harness coordination, and Buzz room progress streaming:
 
 ```bash
 npx tsx src/cli.ts serve --db var/vital.db --tenant acme --port 3100 --site site --with-worker
@@ -688,9 +694,9 @@ Vital's performance is falsifiable and measurable against pre-registered commitm
 
 ## Current State
 
-<!-- vital:testcount -->952/952 tests green<!-- /vital:testcount --> across the complete suite running against real SQLite databases and real socket connections.
+<!-- vital:testcount -->958/958 tests green<!-- /vital:testcount --> across the complete suite running against real SQLite databases and real socket connections.
 
-- **Verified and reachable** (a console route, CLI command or worker handler runs it): Reality Ledger (Invariants I1–I7), Context Bundles, Replay, Attention Coordinator, Cognitive Router, R/A/I Matrix, Honeytasks, Emergency Stops, jcode Harness-API Protocol v1, Authenticated Web Console (Signup, Login, CSRF, RBAC, Review Queue, Rooms Setup, Team Roster, Audit Log, Learning Board, GDPR Erasure), and Marketing Site.
+- **Verified and reachable** (a console route, CLI command or worker handler runs it): Reality Ledger (Invariants I1–I7), Context Bundles, Replay, Attention Coordinator, Cognitive Router, R/A/I Matrix, Honeytasks, Emergency Stops, dsh SDK Wire (stdio JSON-RPC) + jcode Harness-API Protocol v1, Authenticated Web Console (Signup, Login, CSRF, RBAC, Review Queue, Rooms Setup, Team Roster, Audit Log, Learning Board, GDPR Erasure), and Marketing Site.
 - **Tested primitives, not wired to a product surface:** World Sense Funnel, Adversarial Integrity Gate, Ship-to-Result Wedge, Churn & Feature Loops, Agentic Deep Research, Talk Surface cryptographic binding, the egress forward proxy, cross-model transfer testing, and the serverless microVM labels. Each is covered by tests and documented as a prototype; none is reachable from a user path yet. AUDIT.md carries the per-module disposition, and this line is written to agree with it.
 - **One closed loop with an open end:** skill cards are *consumed* at runtime (the worker asks the compiler for an executable card before routing), but nothing in production compiles a card yet — mining surfaces candidates, and compilation stays an explicit, gated act with no exposed trigger. Until that lands the WORKFLOW tier cannot fire on a real tenant.
 - **Upstream absorption:** Narrowed, provenance-pinned leaf modules from QM (`governor.ts`, `ship-gate.ts`, `command-policy.ts`, `crypto.ts`, `objects.ts`, `errors.ts`, `safe-regex.ts`) verified by `scripts/verify-provenance.mjs`.

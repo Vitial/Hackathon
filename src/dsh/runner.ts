@@ -46,19 +46,26 @@ export interface DshRunnerOptions {
 /**
  * Map dsh SDK tool names onto the permission policy's tool vocabulary
  * (built for jcode's read_file/write_file/edit_file/bash set). dsh ships
- * `read`, `write`, `edit`; the classes are what matter — READ,
- * ACT_REVERSIBLE, ACT_IRREVERSIBLE — so map the names and keep the
- * original in the permission record and ledger statement.
+ * `read`, `write`, `edit` (+ search, image, todo, shells); the classes are
+ * what matter — READ, ACT_REVERSIBLE, ACT_IRREVERSIBLE — so map the names
+ * and keep the original in the permission record and ledger statement.
+ * Mirrors DSH_TOOL_CLASSES (policy-snapshot.ts): the two must agree, or the
+ * in-runtime plugin and the parent gate diverge.
  */
 export function toPolicyToolName(name: string): string {
   switch (name) {
     case 'read':
+    case 'glob':
+    case 'grep':
+    case 'read_image':
+    case 'todo_write':
       return 'read_file';
     case 'write':
       return 'write_file';
     case 'edit':
       return 'edit_file';
     case 'shell':
+    case 'pwsh':
       return 'bash';
     default:
       return name;
@@ -153,7 +160,15 @@ export class DshRunner extends EventEmitter {
     }
 
     try {
-      await this.coord.claimExecution(tenant, requestId, task.onBehalfOf, new Date().toISOString());
+      // Adopt a live claim we already own (the Lambda executor pre-claims
+      // before dispatching to the harness): re-claiming IN_FLIGHT would
+      // CLAIM_LOST against ourselves. Anything else claims normally.
+      const live = await this.coord.get(tenant, requestId);
+      if (live?.state === 'IN_FLIGHT' && live.execOwner === task.onBehalfOf) {
+        await this.coord.renewExecutionLease(tenant, requestId, task.onBehalfOf, new Date().toISOString());
+      } else {
+        await this.coord.claimExecution(tenant, requestId, task.onBehalfOf, new Date().toISOString());
+      }
     } catch (e) {
       throw new Error(`[dsh:CLAIM_LOST] ${(e as Error).message}`, { cause: e });
     }
@@ -226,9 +241,10 @@ export class DshRunner extends EventEmitter {
 
     let clientOptsWithCwd: DshClientOptions = { ...clientOpts, cwd: clientOpts.cwd ?? task.workingDir };
     const sessionId = `vital-${requestId}`;
-    // In-runtime answerer (opt-in): freeze the deterministic policy core to
-    // a snapshot file and mount the plugin via a generated --patch overlay.
-    // The parent-side gate below stays authoritative regardless.
+    // In-runtime default plugins: freeze the deterministic policy core to
+    // a snapshot file and mount approval + governance via a generated
+    // --patch overlay. The parent-side gate below stays authoritative
+    // regardless (DSH_NO_DEFAULT_PLUGINS=1 isolates a suspect plugin).
     let enforcement: PolicyEnforcement | null = null;
     if (policyPluginEnabled()) {
       enforcement = await preparePolicyEnforcement(

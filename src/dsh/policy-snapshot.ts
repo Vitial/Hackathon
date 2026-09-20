@@ -25,12 +25,24 @@ import { checkKill } from '../gov/trust.ts';
 export type DshActionClass = 'READ' | 'ACT_REVERSIBLE' | 'ACT_IRREVERSIBLE';
 
 /** dsh SDK tool roster mapped onto Vital action classes. Unknown tools are
- *  absent: the plugin delegates (next()) and the parent denies by default. */
+ *  absent: the plugin delegates (next()) and the parent denies by default.
+ *
+ *  Deliberately narrow: read-family + session-local todo list are provably
+ *  side-effect-free; writes need a bound human approval; shells never run.
+ *  Subagents, web fetch, skills, workflows, and jobs stay denied (UNKNOWN)
+ *  until their transitive governance (child-tool gating, egress) is
+ *  verified against a live model — the denial reason says so. */
 export const DSH_TOOL_CLASSES: Record<string, DshActionClass> = {
   read: 'READ',
+  glob: 'READ',
+  grep: 'READ',
+  read_image: 'READ',
+  todo_write: 'READ',
   write: 'ACT_REVERSIBLE',
   edit: 'ACT_REVERSIBLE',
   bash: 'ACT_IRREVERSIBLE',
+  pwsh: 'ACT_IRREVERSIBLE',
+  shell: 'ACT_IRREVERSIBLE',
 };
 
 export interface PolicySnapshot {

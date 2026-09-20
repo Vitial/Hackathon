@@ -39,14 +39,15 @@ variable "executor_image" {
   }
 }
 
-variable "jcode_image" {
-  description = "Container image for the jcode sibling sidecar (Rust harness API over localhost socket). Ignored when jcode_sidecar_enabled is false."
+variable "deepseek_api_key" {
+  description = "Model key for the dsh runtime (DeepSeek adapter reads DEEPSEEK_API_KEY). Empty = no secret; the runtime boots, turns fail until it is set."
   type        = string
-  default     = "ghcr.io/1jehuang/jcode:v0.84.0"
+  default     = ""
+  sensitive   = true
 }
 
-variable "jcode_sidecar_enabled" {
-  description = "Run the jcode sidecar in the vital-core ECS task. Off for pilot deploys when ghcr.io/1jehuang/jcode is not pullable — coding harness paths stay dry-run until re-enabled."
+variable "dsh_lambda_enabled" {
+  description = "Run Lambda executor jobs through the harnessed dsh lane (tools, sessions, R/A/I policy) instead of the single chat call. Off until a live-model turn proves the lane — flip after verify:dsh-live phase 2 passes with creds."
   type        = bool
   default     = false
 }
@@ -73,34 +74,6 @@ variable "core_requests_per_target" {
   description = "Target ALB requests-per-target for core autoscaling (scale out above it, in below it)"
   type        = number
   default     = 1000
-}
-
-variable "jcode_target" {
-  description = "STAGED split switch: socket = live sidecar in the core task; tcp = run the standalone jcode service (needs the TCP client step first, see main.tf)"
-  type        = string
-  default     = "socket"
-  validation {
-    condition     = contains(["socket", "tcp"], var.jcode_target)
-    error_message = "jcode_target must be socket or tcp."
-  }
-}
-
-variable "jcode_desired_count" {
-  description = "Standalone jcode service tasks once jcode_target = tcp (0 until then)"
-  type        = number
-  default     = 1
-}
-
-variable "jcode_cpu" {
-  description = "Fargate CPU units for the standalone jcode task"
-  type        = string
-  default     = "512"
-}
-
-variable "jcode_memory" {
-  description = "Fargate memory (MB) for the standalone jcode task"
-  type        = string
-  default     = "1024"
 }
 
 variable "nat_per_az" {
@@ -235,7 +208,7 @@ variable "allowed_egress_hosts" {
 }
 
 variable "lambda_memory_mb" {
-  description = "Lambda executor memory (CPU scales with it; jcode-class work wants 2048+)"
+  description = "Lambda executor memory (CPU scales with it; model-harness work wants 2048+)"
   type        = number
   default     = 2048
 }

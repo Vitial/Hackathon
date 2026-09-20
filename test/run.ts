@@ -33,6 +33,7 @@ import './models.test.ts';
 import './jcode.test.ts';
 import './dsh.test.ts';
 import './dsh-policy.test.ts';
+import './executor-dsh.test.ts';
 import './vendor.test.ts';
 import './talk.test.ts';
 import './auth.test.ts';

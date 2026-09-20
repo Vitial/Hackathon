@@ -1,8 +1,8 @@
 /**
  * Agent Tasks — the read-model and HTML fragments for monitoring long-running
- * Jcode coding-agent executions ("Ongoing Tasks").
+ * Agent coding-agent executions ("Ongoing Tasks").
  *
- * Grounding (docs/agent-tasks-dashboard.md §1.5): the Jcode swarm is THREE
+ * Grounding (docs/agent-tasks-dashboard.md §1.5): the agent swarm is THREE
  * distinct mechanisms, and this page renders each from the real column that
  * backs it — never conflating them:
  *   • A single run's lifecycle  → the row itself (state, spent, execOwner).
@@ -500,7 +500,7 @@ export function renderAgentTaskList(
   const rows = tasks.map((t) => renderTaskRow(t, now, here, reviews.get(t.request.id), inspectHref)).join('');
   return `<div class="v-task-list" data-now="${esc(now)}">
   <div class="v-split" style="margin-bottom:14px;">
-    <p class="v-lede" style="margin:0">Real-time view of Jcode coding-agent executions in flight. Expand a task to see its agents.</p>
+    <p class="v-lede" style="margin:0">Real-time view of agent coding-agent executions in flight. Expand a task to see its agents.</p>
     ${renderLivePill(totals.anyLive)}
   </div>
   ${renderKpiTiles(totals)}

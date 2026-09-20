@@ -24,7 +24,8 @@ COPY --from=build /app/dist ./dist
 # Marketing site + agent mascots. With `serve --site site`, `/` is public
 # index.html and the session-gated console lives under `/console` (see serve.ts).
 COPY site ./site
-# jcode sidecar reaches core over localhost; the socket path is shared via volume in ECS.
+# The dsh runtime is spawned in-container by the worker (stdio JSON-RPC);
+# no sidecar, no shared volume.
 ENV HOST=0.0.0.0 PORT=3100 VITAL_TENANT=acme
 EXPOSE 3100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

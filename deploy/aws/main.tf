@@ -3,10 +3,15 @@
 # Maps to idea.md §17 (all-AWS topology) as:
 #   Buzz relay            -> ECS Fargate + Cloud Map (deploy/aws/buzz.tf)
 #   Vital core + Postgres -> ECS Fargate service + RDS Postgres 16 (PITR on)
-#   jcode sibling         -> sidecar container in the core task (localhost socket,
-#                            same REQUEST/bid path as src/jcode/runner.ts — coordinated, not mounted)
+#   dsh runtime         -> spawned in-process-container by the worker
+#                            (stdio JSON-RPC parent<->child, same REQUEST/bid
+#                            path as src/dsh/runner.ts - coordinated, not
+#                            mounted). No sidecar: stdio cannot cross
+#                            containers; a socket-broker sidecar returns only
+#                            with the planned socket-listen extension.
+#                            Model key arrives as DEEPSEEK_API_KEY (secret).
 #   Ephemeral workers     -> Lambda container image (Firecracker microVMs) on SQS,
-#                            15-min cap; anything longer stays on the jcode sidecar.
+#                            15-min cap; anything longer stays on the dsh runtime.
 #   Raw artifacts         -> S3 (content-addressed, like data/artifacts/<sha256>)
 #   Immutable audit copy  -> second S3 bucket with Object Lock (separate from the Ledger,
 #                            so a compromised runtime cannot erase its trail — idea.md §12)
@@ -346,6 +351,17 @@ resource "aws_secretsmanager_secret_version" "review_secret" {
   secret_id     = aws_secretsmanager_secret.review_secret[0].id
   secret_string = var.vital_review_secret
 }
+# Model key for the dsh runtime (DeepSeek adapter reads DEEPSEEK_API_KEY).
+# Empty var = no secret; the runtime boots, turns fail until it is set.
+resource "aws_secretsmanager_secret" "deepseek" {
+  count = var.deepseek_api_key == "" ? 0 : 1
+  name  = "${local.name}/deepseek-api-key"
+}
+resource "aws_secretsmanager_secret_version" "deepseek" {
+  count         = var.deepseek_api_key == "" ? 0 : 1
+  secret_id     = aws_secretsmanager_secret.deepseek[0].id
+  secret_string = var.deepseek_api_key
+}
 resource "aws_secretsmanager_secret" "bootstrap_password" {
   count = var.bootstrap_password == "" ? 0 : 1
   name  = "${local.name}/bootstrap-password"
@@ -569,6 +585,7 @@ resource "aws_iam_policy" "ecs_execution_secrets" {
           ], aws_secretsmanager_secret.operator[*].arn,
           aws_secretsmanager_secret.agent_master_key[*].arn,
           aws_secretsmanager_secret.review_secret[*].arn,
+          aws_secretsmanager_secret.deepseek[*].arn,
           aws_secretsmanager_secret.bootstrap_password[*].arn,
           aws_secretsmanager_secret.setup_secret[*].arn,
           var.enable_buzz ? [
@@ -759,12 +776,6 @@ resource "aws_ecs_task_definition" "core" {
   memory                   = var.core_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
-  dynamic "volume" {
-    for_each = var.jcode_sidecar_enabled ? [1] : []
-    content {
-      name = "jcode-sock"
-    }
-  }
   volume {
     name = "sandboxes"
     efs_volume_configuration {
@@ -773,16 +784,15 @@ resource "aws_ecs_task_definition" "core" {
       authorization_config { access_point_id = aws_efs_access_point.sandboxes.id }
     }
   }
-  container_definitions = jsonencode(concat([
+  container_definitions = jsonencode([
     {
       name         = "vital-core"
       image        = local.core_image
       essential    = true
       portMappings = [{ containerPort = 3100, protocol = "tcp" }]
-      mountPoints = concat(
-        [{ sourceVolume = "sandboxes", containerPath = "/var/vital/sandboxes" }],
-        var.jcode_sidecar_enabled ? [{ sourceVolume = "jcode-sock", containerPath = "/run" }] : []
-      )
+      mountPoints = [
+        { sourceVolume = "sandboxes", containerPath = "/var/vital/sandboxes" }
+      ]
       environment = concat([
         { name = "HOST", value = "0.0.0.0" },
         { name = "PORT", value = "3100" },
@@ -826,17 +836,19 @@ resource "aws_ecs_task_definition" "core" {
         # the task role has no ecs:RunTask to make one. Leave it unset until the
         # driver actually launches tasks — see the staged note in variables.tf.
         { name = "AWS_REGION", value = var.region },
-        { name = "ALLOWED_EGRESS_HOSTS", value = local.allowed_egress }
-        ], var.jcode_sidecar_enabled ? [
-        { name = "JCODE_API_SOCKET", value = "/run/jcode-api.sock" }
-      ] : [], local.bedrock_model_env, local.tls_enabled == 1 ? [
+        { name = "ALLOWED_EGRESS_HOSTS", value = local.allowed_egress },
+        # dsh harness runtime (src/dsh/): spawned in-container by the worker
+        # over stdio JSON-RPC. Unset DEEPSEEK_API_KEY = boot ok, turns fail.
+        { name = "DSH_ENABLED", value = "1" },
+        { name = "DSH_PROFILE", value = "sdk" }
+        ], local.bedrock_model_env, local.tls_enabled == 1 ? [
         # Only with a certificate attached (dns.tf): the ALB then terminates
         # TLS and redirects :80, so the session cookie must carry `Secure` or
         # the browser will also send it over a plaintext http:// downgrade.
         # An HTTP-only stack must NOT set this — the browser would reject the
         # cookie and login would fail closed in a way that looks like a bug.
         { name = "SECURE_COOKIES", value = "1" }
-      ] : [], var.enable_buzz ? [
+        ] : [], var.enable_buzz ? [
         { name = "BUZZ_RELAY_URL", value = local.buzz_discovery }
       ] : [])
       secrets = concat(
@@ -857,6 +869,9 @@ resource "aws_ecs_task_definition" "core" {
         var.vital_review_secret == "" ? [] : [
           { name = "VITAL_REVIEW_SECRET", valueFrom = aws_secretsmanager_secret.review_secret[0].arn }
         ],
+        var.deepseek_api_key == "" ? [] : [
+          { name = "DEEPSEEK_API_KEY", valueFrom = aws_secretsmanager_secret.deepseek[0].arn }
+        ],
         var.bootstrap_password == "" ? [] : [
           { name = "VITAL_BOOTSTRAP_PASSWORD", valueFrom = aws_secretsmanager_secret.bootstrap_password[0].arn }
         ],
@@ -873,23 +888,7 @@ resource "aws_ecs_task_definition" "core" {
         }
       }
     }
-  ], var.jcode_sidecar_enabled ? [
-    {
-      name        = "jcode"
-      image       = var.jcode_image
-      essential   = false
-      mountPoints = [{ sourceVolume = "jcode-sock", containerPath = "/run" }]
-      environment = [{ name = "JCODE_API_SOCKET", value = "/run/jcode-api.sock" }]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.core.name
-          awslogs-region        = var.region
-          awslogs-stream-prefix = "jcode"
-        }
-      }
-    }
-  ] : []))
+  ])
 }
 
 resource "aws_secretsmanager_secret" "db_url" { name = "${local.name}/database-url" }
@@ -947,84 +946,12 @@ resource "aws_appautoscaling_policy" "core_requests" {
   }
 }
 
-# ------------------------------------------------------- jcode service -----
-# STAGED, not live (default jcode_target = "socket"): the jcode sidecar in
-# the core task above still shares the jcode-sock volume today, because
-# JcodeClient (src/jcode/client.ts) only speaks socketPath — node:net
-# connect({ path }) — with no host:port option. A real split breaks the
-# shared volume (ECS volumes do not cross tasks), so it needs a TCP step
-# first: harness listens on TCP, client learns host:port. That code change is
-# NOT this stack's to make, so this task definition + service + discovery
-# namespace are the ready-to-run half: set jcode_target = "tcp" and the
-# service scales to jcode_desired_count; teach the client TCP; then drop the
-# sidecar container from the core task definition.
+# Private DNS namespace (shared: Buzz discovery lives here too — see
+# buzz.tf). The staged jcode discovery service that used to hang off it is
+# gone with the harness swap (2026-09-20).
 resource "aws_service_discovery_private_dns_namespace" "vital" {
   name = "${local.name}.local"
   vpc  = aws_vpc.main.id
-}
-
-resource "aws_service_discovery_service" "jcode" {
-  name = "jcode"
-  dns_config {
-    namespace_id = aws_service_discovery_private_dns_namespace.vital.id
-    dns_records {
-      ttl  = 10
-      type = "A"
-    }
-  }
-}
-
-resource "aws_ecs_task_definition" "jcode" {
-  family                   = "${local.name}-jcode"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = var.jcode_cpu
-  memory                   = var.jcode_memory
-  execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
-  container_definitions = jsonencode([
-    {
-      name      = "jcode"
-      image     = var.jcode_image
-      essential = true
-      # Placeholder for the staged TCP listener: the harness does NOT listen
-      # on TCP today (see note above). Until it does, nothing dials this.
-      portMappings = [{ containerPort = 50051, protocol = "tcp" }]
-      environment = [
-        { name = "JCODE_API_SOCKET", value = "/run/jcode-api.sock" },
-        # TODO(tcp-split): point the harness at 0.0.0.0:50051 here and teach
-        # JcodeClient a host:port dial, then flip jcode_target and remove the
-        # sidecar from the core task.
-        { name = "JCODE_API_TCP_PORT", value = "50051" }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.core.name
-          awslogs-region        = var.region
-          awslogs-stream-prefix = "jcode-split"
-        }
-      }
-    }
-  ])
-}
-
-resource "aws_ecs_service" "jcode" {
-  name            = "${local.name}-jcode"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.jcode.arn
-  # 0 in socket mode (the sidecar does the work); jcode_desired_count once
-  # jcode_target flips to "tcp" and the client can dial the discovery name.
-  desired_count = var.jcode_target == "tcp" ? var.jcode_desired_count : 0
-  launch_type   = "FARGATE"
-  network_configuration {
-    subnets          = aws_subnet.private[*].id
-    security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
-  }
-  service_registries {
-    registry_arn = aws_service_discovery_service.jcode.arn
-  }
 }
 
 # ------------------------------------------------------- lambda executors ----
@@ -1062,9 +989,17 @@ resource "aws_lambda_function" "executor" {
       # No AWS_REGION here: Lambda reserves AWS_* keys and rejects the create
       # call outright. The runtime injects AWS_REGION itself, which is exactly
       # what models.ts' bedrockBaseUrl reads.
-      ARTIFACT_BUCKET       = aws_s3_bucket.artifacts.bucket
-      DATABASE_URL          = aws_secretsmanager_secret_version.db_url.secret_string
-      BEDROCK_API_KEY       = aws_secretsmanager_secret_version.bedrock.secret_string
+      ARTIFACT_BUCKET = aws_s3_bucket.artifacts.bucket
+      DATABASE_URL    = aws_secretsmanager_secret_version.db_url.secret_string
+      BEDROCK_API_KEY = aws_secretsmanager_secret_version.bedrock.secret_string
+      # Harnessed MicroVM lane (src/aws/executor.ts runHarnessJob): off until
+      # proven — flip dsh_lambda_enabled after a live-model turn succeeds.
+      # DEEPSEEK_API_KEY rides the secret only when set (empty = chat lane
+      # unaffected, harness lane fails closed at the model call).
+      DSH_ENABLED         = var.dsh_lambda_enabled ? "1" : "0"
+      DSH_PROFILE         = "sdk"
+      DSH_TURN_TIMEOUT_MS = "600000"
+      DEEPSEEK_API_KEY    = var.deepseek_api_key == "" ? "" : aws_secretsmanager_secret_version.deepseek[0].secret_string
     }
   }
   logging_config {

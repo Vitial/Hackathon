@@ -329,7 +329,7 @@ export function renderConsoleShell(opts: {
       label: 'Agent Tasks',
       href: '/console/agent-tasks',
       icon: ICONS.tasks,
-      title: 'Ongoing Jcode agent executions',
+      title: 'Ongoing agent executions',
     },
     {
       key: 'meetings',

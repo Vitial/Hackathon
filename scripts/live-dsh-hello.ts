@@ -27,7 +27,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DshClient } from '../src/dsh/client.ts';
-import { buildPolicyPatch, vitalApprovalPluginPath } from '../src/dsh/policy-plugin.ts';
+import { buildVitalPatch, vitalApprovalPluginPath, vitalGovernancePluginPath } from '../src/dsh/policy-plugin.ts';
 import { DSH_TOOL_CLASSES } from '../src/dsh/policy-snapshot.ts';
 
 const fail = (msg: string): never => {
@@ -57,8 +57,8 @@ if (process.env.DSH_VERIFY_PLUGIN === '1') {
       approvedDecisionId: null,
     }),
   );
-  const patchPath = join(dir, 'vital-approval.patch.yml');
-  writeFileSync(patchPath, buildPolicyPatch(vitalApprovalPluginPath()));
+  const patchPath = join(dir, 'vital.patch.yml');
+  writeFileSync(patchPath, buildVitalPatch(vitalApprovalPluginPath(), vitalGovernancePluginPath()));
   launchArgs.push('--patch', patchPath);
   console.log('[dsh-live] plugin verification on: snapshot + patch generated via production builders');
 }

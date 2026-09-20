@@ -1,8 +1,10 @@
-import { createLedger } from '../ledger/ledger.ts';
-import { createCoordinator } from '../coord/coordinator.ts';
+import { createLedger, type Ledger } from '../ledger/ledger.ts';
+import { createCoordinator, type Coordinator } from '../coord/coordinator.ts';
 import { migratePostgres, openFromEnv } from '../core/pg.ts';
 import { migrate } from '../core/db.ts';
 import type { AsyncDb } from '../core/db.ts';
+import type { CoordinationRequest } from '../core/types.ts';
+import type { DshClientOptions } from '../dsh/client.ts';
 import {
   assertApproved,
   completeChat,
@@ -14,6 +16,11 @@ import {
 import { decideEgress } from '../substrate/egress.ts';
 import { checkKill } from '../gov/trust.ts';
 import { getRates } from '../attrib/attribution.ts';
+import { DshRunner } from '../dsh/runner.ts';
+import { dshClientOptionsFromEnv } from '../dsh/launch.ts';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
 
 /**
  * AWS Lambda container handler for fast coding-agent work (TODO AWS deploy).
@@ -24,10 +31,12 @@ import { getRates } from '../attrib/attribution.ts';
  * no durable state, no ambient credentials (scope work only, Secrets Manager
  * supplies keys at the boundary, never the Ledger).
  *
- * Long jcode runs (swarms, overnight, graph memory) do NOT belong here —
- * Lambda caps at 15 min. They run as the Fargate jcode sidecar next to
+ * Long dsh runs (swarms, overnight, graph memory) do NOT belong here —
+ * Lambda caps at 15 min. They run on the core worker lane next to
  * vital-core (deploy/aws/main.tf), coordinated over the same REQUEST path
- * (src/jcode/runner.ts). This handler is REFLEX/WORKFLOW + short MODEL only.
+ * (src/dsh/runner.ts). This handler is REFLEX/WORKFLOW + short MODEL only,
+ * either as a single chat call (default) or, with DSH_ENABLED=1, as a real
+ * harnessed turn through DshRunner (tools, sessions, R/A/I policy).
  *
  * Epistemics: the handler appends OBSERVATION/ACTION only (I1). It never
  * mints FACT/MEASUREMENT/OUTCOME — outcomes still go through recordOutcome
@@ -148,6 +157,119 @@ function checkModelEgress(baseUrl: string, env: NodeJS.ProcessEnv): void {
   if (verdict.verdict !== 'allow') throw new Error(`[executor:EGRESS] ${verdict.reason}`);
 }
 
+/** dsh provider route -> model host for the egress allowlist. */
+const DSH_PROVIDER_HOSTS: Record<string, string> = {
+  'deepseek-official': 'api.deepseek.com',
+};
+
+/**
+ * Model egress for the harnessed lane: same fail-closed allowlist semantics
+ * as the chat lane, but the host comes from the dsh provider route (the SDK
+ * child makes its own HTTPS calls — the chat lane's baseUrl check cannot see
+ * them). Unmapped providers refuse loudly: adding a route without mapping
+ * its host would silently exempt it from egress control.
+ */
+function checkDshEgress(provider: string, env: NodeJS.ProcessEnv): void {
+  const host = DSH_PROVIDER_HOSTS[provider];
+  if (!host) {
+    throw new Error(`[executor:EGRESS] unknown dsh provider "${provider}": map its model host first, refusing`);
+  }
+  const allowRaw = env['ALLOWED_EGRESS_HOSTS'] ?? '';
+  const allowedHosts = allowRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (allowedHosts.length === 0) return; // open egress (dev); prod sets the allowlist in Terraform
+  const verdict = decideEgress(host, { allowedHosts, deniedHosts: [] });
+  if (verdict.verdict !== 'allow') throw new Error(`[executor:EGRESS] ${verdict.reason}`);
+}
+
+/**
+ * Harnessed Lambda turn: real agentic coding through DshRunner (tools,
+ * sessions, R/A/I policy) instead of the single chat call. The runner owns
+ * the ledger writeback, mid-run budget flow, and request settlement; this
+ * only persists the transcript to the DB artifact table (the runner's
+ * artifact store is ephemeral disk here) and maps the outcome.
+ *
+ * Ungrounded work throws: an agentic lane can ACT, not just talk, so the
+ * no-ungrounded-coding invariant (shared with the core lane) holds here too.
+ */
+async function runHarnessJob(
+  db: AsyncDb,
+  ledger: Ledger,
+  coord: Coordinator,
+  job: ExecutorJob,
+  req: CoordinationRequest,
+  env: NodeJS.ProcessEnv,
+  dshOpts: DshClientOptions,
+): Promise<Omit<JobResult, 'messageId' | 'requestId'>> {
+  const owner = job.onBehalfOf ?? 'lambda-executor';
+  checkDshEgress(dshOpts.provider ?? 'deepseek-official', env);
+  // Writable session workspace: Lambda's writable disk is os.tmpdir().
+  const safeReq = job.requestId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const workingDir = join(tmpdir(), 'vital-exec', safeReq);
+  try {
+    mkdirSync(workingDir, { recursive: true });
+  } catch (e) {
+    throw new Error(`[executor:WORKSPACE] cannot create ${workingDir}: ${(e as Error).message}`, { cause: e });
+  }
+  // Fit inside the 900s Lambda cap with headroom for settle + teardown.
+  const rawTimeout = Number(env['DSH_TURN_TIMEOUT_MS'] ?? '600000');
+  const turnTimeoutMs = Number.isSafeInteger(rawTimeout) && rawTimeout > 0 ? Math.min(rawTimeout, 840_000) : 600_000;
+  const grounded = [...(job.claimRefs ?? []), ...(req.claimRefs ?? [])];
+  const runner = new DshRunner(db, ledger, coord);
+  const out = await runner.run(
+    job.tenant,
+    job.requestId,
+    {
+      command: job.prompt,
+      workingDir,
+      claimRefs: grounded,
+      onBehalfOf: owner,
+      maxDollars: req.bid.dollars ?? 1,
+      maxTokens: req.bid.tokens ?? 10_000,
+      turnTimeoutMs,
+    },
+    dshOpts,
+  );
+  // DB-persisted transcript: same 1MiB bound as the chat lane. Linked to the
+  // runner's closing OBSERVATION claim (last claim appended).
+  const now = new Date().toISOString();
+  if (out.transcript.length > 1_000_000) {
+    throw new Error(
+      '[executor:ARTIFACT_TOO_LARGE] harness transcript exceeds the 1MiB artifact bound: refusing to store a silent truncation',
+    );
+  }
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS executor_artifacts (
+         id TEXT PRIMARY KEY, tenant TEXT NOT NULL, request_id TEXT NOT NULL,
+         claim_id TEXT, model TEXT, body TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    )
+    .run();
+  const artifactId = `art_${crypto.randomUUID()}`;
+  await db
+    .prepare(
+      `INSERT INTO executor_artifacts (id, tenant, request_id, claim_id, model, body, created_at) VALUES (?,?,?,?,?,?,?)`,
+    )
+    .run(artifactId, job.tenant, job.requestId, null, 'dsh', out.transcript, now);
+  const obsClaim = out.claimIds.length > 0 ? out.claimIds[out.claimIds.length - 1]! : null;
+  if (obsClaim) {
+    await db.prepare('UPDATE executor_artifacts SET claim_id = ? WHERE id = ?').run(obsClaim, artifactId);
+  }
+  if (out.status === 'COMPLETED') {
+    return { status: 'COMPLETED', claimIds: out.claimIds, usage: out.usage };
+  }
+  // The runner already settled the request (fail / TERMINATED_BUDGET):
+  // surface the refusal, don't re-settle.
+  return {
+    status: 'FAILED',
+    claimIds: out.claimIds,
+    usage: out.usage,
+    error: out.refusalReason ?? `harness ${out.status}`,
+  };
+}
+
 /** Exported for tests: the per-record path without the SQS/DB-open envelope. */
 export async function runJob(
   db: AsyncDb,
@@ -185,12 +307,14 @@ export async function runJob(
     throw new Error(`[executor] request ${job.requestId} is ${req.state}, not admitted`);
   }
 
-  // Emergency stop, checked BEFORE the claim and before any spend. This executor
-  // runs serverless and never passes through a harness adapter, so the
-  // adapter-level check that guards a local run cannot guard this one — without
-  // this, an operator's stop halts the worker and leaves Lambda spending money
-  // on the same scope. Checked here rather than deeper so the refusal also
-  // precedes `assertApproved` and the model call.
+  // Emergency stop, checked BEFORE the claim and before any spend. The chat
+  // lane never passes through a harness adapter, so the adapter-level check
+  // that guards a local run cannot guard it — without this, an operator's
+  // stop halts the worker and leaves Lambda spending money on the same
+  // scope. (The harnessed lane DOES pass through DshRunner, which checks
+  // again pre-flight and mid-turn; this stays as the outer gate for both.)
+  // Checked here rather than deeper so the refusal also precedes
+  // `assertApproved` and the model call.
   if ((await checkKill(db, job.tenant, req.targetScope, '*')) || (await checkKill(db, job.tenant, '*', '*'))) {
     const reason = `kill switch engaged for scope "${req.targetScope}"`;
     // Terminal refusal, not a retry: a stop is an operator decision, and an
@@ -224,6 +348,15 @@ export async function runJob(
         `[executor:CLAIM_LOST] request ${job.requestId} is being executed by another worker: refusing to double-spend`,
       );
     }
+  }
+
+  // Harnessed turn first: it needs no chat profile or chat API key (the dsh
+  // runtime carries its own provider route + credentials), so branch before
+  // the chat setup below. The runner adopts this claim when the owner
+  // matches, and its own egress + kill + budget gates apply inside.
+  const dshOpts = dshClientOptionsFromEnv(env);
+  if (dshOpts) {
+    return runHarnessJob(db, ledger, coord, job, req, env, dshOpts);
   }
 
   const profile = job.lane === 'dev' ? devProfile(env) : prodProfile(env);

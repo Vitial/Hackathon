@@ -1,4 +1,4 @@
-// Agent Tasks — the "Ongoing Tasks" console for long-running Jcode executions.
+// Agent Tasks — the "Ongoing Tasks" console for long-running agent executions.
 //
 // Three routes, one per surface the design spec (docs/agent-tasks-dashboard.md)
 // names:
@@ -181,7 +181,7 @@ export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
       capability: 'session',
       surface: 'html',
       activation: 'required',
-      note: 'Live monitor for in-flight Jcode agent executions and their sub-agent trees. Session-only: it names goals, scopes and spend.',
+      note: 'Live monitor for in-flight agent executions and their sub-agent trees. Session-only: it names goals, scopes and spend.',
       async handler(ctx) {
         const auth = requireAuth(ctx);
         const { tenant } = ctx.env;

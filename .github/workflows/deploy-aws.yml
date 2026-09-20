@@ -92,6 +92,7 @@ jobs:
           TF_VAR_buzz_relay_private_key: ${{ secrets.TF_VAR_BUZZ_RELAY_PRIVATE_KEY }}
           TF_VAR_buzz_agent_master_key: ${{ secrets.TF_VAR_BUZZ_AGENT_MASTER_KEY }}
           TF_VAR_vital_review_secret: ${{ secrets.TF_VAR_VITAL_REVIEW_SECRET }}
+          TF_VAR_deepseek_api_key: ${{ secrets.TF_VAR_DEEPSEEK_API_KEY }}
           TF_VAR_bootstrap_email: ${{ secrets.TF_VAR_BOOTSTRAP_EMAIL }}
           TF_VAR_bootstrap_password: ${{ secrets.TF_VAR_BOOTSTRAP_PASSWORD }}
           TF_VAR_setup_secret: ${{ secrets.TF_VAR_SETUP_SECRET }}
@@ -117,7 +118,6 @@ jobs:
             -var "region=$AWS_REGION" \
             -var "core_image=$CORE_IMAGE" \
             -var "executor_image=$EXECUTOR_IMAGE" \
-            -var "jcode_sidecar_enabled=false" \
             -var "domain_name=${{ vars.DOMAIN_NAME }}" \
             -var "hosted_zone_id=${{ vars.HOSTED_ZONE_ID }}" \
             -var "ops_alarm_email=${{ vars.OPS_ALARM_EMAIL }}"

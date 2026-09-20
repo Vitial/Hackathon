@@ -12,6 +12,10 @@ import type { DshClientOptions } from './client.ts';
  *   DSH_PROFILE              dsh profile (default: sdk)
  *   DSH_PATCHES              comma-separated extra --patch overlays (e.g. our
  *                            approval-answerer plugin patch)
+ *   DSH_ARGS                 full launch-args override (advanced / tests):
+ *                            replaces `[bin --patch ... --profile ...]`
+ *                            wholesale, space-separated. The runner still
+ *                            appends its per-run `--patch`.
  *   DSH_PROVIDER             provider route (default: deepseek-official)
  *   DSH_MODEL                model name (default: deepseek-v4-flash)
  *   DSH_MAX_TOKENS           per-request output cap (default: unset)
@@ -25,14 +29,23 @@ export function dshClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): D
     .split(',')
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
-  const args: string[] = [];
-  for (const p of patches) args.push('--patch', p);
-  args.push('--profile', profile);
+  const args: string[] =
+    env.DSH_ARGS !== undefined && env.DSH_ARGS.trim().length > 0
+      ? env.DSH_ARGS.split(' ').filter((a) => a.length > 0)
+      : (() => {
+          const a: string[] = [];
+          for (const p of patches) a.push('--patch', p);
+          a.push('--profile', profile);
+          return a;
+        })();
   const maxTokens = env.DSH_MAX_TOKENS ? Number(env.DSH_MAX_TOKENS) : undefined;
+  const fullOverride = env.DSH_ARGS !== undefined && env.DSH_ARGS.trim().length > 0;
   return {
     launch: {
       command: env.DSH_COMMAND ?? process.execPath,
-      args: [binPath, ...args],
+      // Full override replaces [bin, ...flags] wholesale (the fake runtime
+      // is its own executable: node <fixture>, no dsh bin involved).
+      args: fullOverride ? args : [binPath, ...args],
     },
     cwd: env.DSH_CWD,
     provider: env.DSH_PROVIDER,

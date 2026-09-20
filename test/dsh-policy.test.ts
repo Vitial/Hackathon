@@ -9,8 +9,15 @@ import {
   writePolicySnapshot,
   removePolicySnapshot,
 } from '../src/dsh/policy-snapshot.ts';
-import { buildPolicyPatch, preparePolicyEnforcement, vitalApprovalPluginPath } from '../src/dsh/policy-plugin.ts';
+import {
+  buildVitalPatch,
+  preparePolicyEnforcement,
+  vitalApprovalPluginPath,
+  vitalGovernancePluginPath,
+} from '../src/dsh/policy-plugin.ts';
 import { decide } from '../src/dsh/vital-approval.mjs';
+import { SECTION_NAME, SECTION_ORDER, SECTION_TEXT } from '../src/dsh/vital-governance.mjs';
+import { toPolicyToolName } from '../src/dsh/runner.ts';
 console.log('\n\x1b[1mdsh policy snapshot + approval plugin\x1b[0m');
 
 T('the roster maps the sdk tools onto Vital action classes', () => {
@@ -101,7 +108,9 @@ T('the generated patch mounts the real plugin file by absolute path', async () =
     const { readFileSync } = await import('node:fs');
     const patch = readFileSync(prep.patchPath, 'utf8');
     eq(patch.includes('vital-approval'), true);
+    eq(patch.includes('vital-governance'), true);
     eq(patch.includes(vitalApprovalPluginPath()), true);
+    eq(patch.includes(vitalGovernancePluginPath()), true);
   } finally {
     prep.cleanup();
     eq(existsSync(prep.snapshotPath), false);
@@ -109,6 +118,52 @@ T('the generated patch mounts the real plugin file by absolute path', async () =
 });
 
 T('the patch builder quotes paths safely', () => {
-  const patch = buildPolicyPatch(`C:\\we'ird\\path.mjs`);
-  eq(patch.includes(`'C:\\we''ird\\path.mjs'`), true);
+  const patch = buildVitalPatch(`C:\\we'ird\\a.mjs`, `/x/b.mjs`);
+  eq(patch.includes(`'C:\\we''ird\\a.mjs'`), true);
+  eq(patch.includes(`'/x/b.mjs'`), true);
+  eq(patch.includes('inject: [approval]'), true);
+  eq(patch.includes('inject: [systemPrompt]'), true);
+});
+
+T('the governance plugin registers an additive preamble section', async () => {
+  const mod = await import('../src/dsh/vital-governance.mjs');
+  const seen: { name: string; order: number; text: string; interpolate?: boolean }[] = [];
+  const apply = (mod as unknown as { apply: (ctx: unknown) => void }).apply;
+  apply({
+    systemPrompt: {
+      section: (s: { name: string; order: number; text: string; interpolate?: boolean }) => {
+        seen.push(s);
+      },
+    },
+  });
+  eq(seen.length, 1);
+  eq(seen[0]!.name, SECTION_NAME);
+  eq(seen[0]!.order, SECTION_ORDER);
+  eq(seen[0]!.text, SECTION_TEXT);
+  eq(seen[0]!.interpolate, false);
+  eq(SECTION_TEXT.includes('{{'), false, 'no template braces: strict variables would fail assembly:');
+});
+
+T('roster and policy mapping agree on every classified tool', () => {
+  const cases: [string, string][] = [
+    ['read', 'read_file'],
+    ['glob', 'read_file'],
+    ['grep', 'read_file'],
+    ['read_image', 'read_file'],
+    ['todo_write', 'read_file'],
+    ['write', 'write_file'],
+    ['edit', 'edit_file'],
+    ['bash', 'bash'],
+    ['pwsh', 'bash'],
+    ['shell', 'bash'],
+  ];
+  for (const [dsh, policy] of cases) {
+    eq(toPolicyToolName(dsh), policy, `${dsh} maps to ${policy}:`);
+    eq(DSH_TOOL_CLASSES[dsh] !== undefined, true, `${dsh} is classified in the snapshot roster:`);
+  }
+  // Unmapped tools pass through to deny-by-default on both sides.
+  eq(toPolicyToolName('subagent'), 'subagent');
+  eq(DSH_TOOL_CLASSES['subagent'], undefined);
+  eq(toPolicyToolName('web'), 'web');
+  eq(DSH_TOOL_CLASSES['web'], undefined);
 });
