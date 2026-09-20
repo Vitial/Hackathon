@@ -53,13 +53,16 @@ import './buzz-chat-first.test.ts';
 import './custom-rooms.test.ts';
 import './fabrication-guard.test.ts';
 import './buzz-avatars.test.ts';
+import './buzz-record-context.test.ts';
 import './issues-panel.test.ts';
 import './coding-agent.test.ts';
 import './meeting.test.ts';
 import './request-cache.test.ts';
+import './feed.test.ts';
 import './routes.test.ts';
 import './tenant-scope.test.ts';
 import './tokens.test.ts';
+import './multi-tenant-registration.test.ts';
 import { enableStatusWrites } from './helpers.ts';
 
 enableStatusWrites();

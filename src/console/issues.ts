@@ -362,6 +362,22 @@ export async function getIssue(db: AsyncDb, tenant: string, issueId: string): Pr
   return r ? rowToIssue(r) : null;
 }
 
+/**
+ * Specific issues by id, in one statement, tenant-scoped.
+ *
+ * `getIssue` is the right read for one record; a caller that already knows
+ * which issues it wants (a room's linked records) uses this instead, so the
+ * cost is one read whatever the list — and so the caller cannot accidentally
+ * turn a digest into a per-row loop.
+ */
+export async function getIssuesByIds(db: AsyncDb, tenant: string, ids: string[]): Promise<IssueRow[]> {
+  if (ids.length === 0) return [];
+  const rows = (await db
+    .prepare(`SELECT * FROM issues WHERE tenant = ? AND id IN (${ids.map(() => '?').join(',')})`)
+    .all(tenant, ...ids)) as Record<string, unknown>[];
+  return rows.map(rowToIssue);
+}
+
 export async function addComment(
   db: AsyncDb,
   tenant: string,
@@ -1167,7 +1183,8 @@ function issueCard(issue: IssueRow, comments: IssueCommentRow[]): string {
 </article>`;
 }
 
-function formatIssueKey(issue: { id: string; title: string; description?: string }): string {
+/** The human key a row shows (`CRM-51`). Exported for the row's inspector panel. */
+export function formatIssueKey(issue: { id: string; title: string; description?: string }): string {
   const m = String(issue.description || '').match(/(?:key|issue):\s*([a-zA-Z0-9_-]+)/i);
   if (m && m[1]) return m[1];
   const ghNumberMatch = String(issue.description || '').match(/(?:github\s*#|gh\s*#)(\d+)/i);
@@ -1256,9 +1273,21 @@ function statusIndicatorSvg(state: IssueState, progress: number): string {
   </span>`;
 }
 
-function issueListRow(issue: IssueRow, comments: IssueCommentRow[]): string {
+function issueListRow(
+  issue: IssueRow,
+  comments: IssueCommentRow[],
+  /**
+   * Open this issue in the shared inspector instead of nowhere. Absent on
+   * surfaces with no inspector layout, where the title stays plain text — one
+   * renderer, two honest behaviours, decided by the caller.
+   */
+  inspectHrefFor?: (issueId: string) => string,
+): string {
   const count = comments.filter((c) => c.issueId === issue.id).length;
   const key = formatIssueKey(issue);
+  const titleHtml = inspectHrefFor
+    ? `<a class="iss-row-title" href="${esc(inspectHrefFor(issue.id))}" data-inspect="${esc(`issue:${issue.id}`)}">${esc(issue.title)}</a>`
+    : `<span class="iss-row-title">${esc(issue.title)}</span>`;
   const subtasks = extractSubtasks(issue);
   const estimate = extractEstimate(issue);
   const dueDate = extractDueDate(issue);
@@ -1308,7 +1337,7 @@ function issueListRow(issue: IssueRow, comments: IssueCommentRow[]): string {
     ${prioritySignalSvg(issue.priority)}
     <span class="iss-row-key">${esc(key)}</span>
     ${statusIndicatorSvg(issue.state, issue.progress)}
-    <span class="iss-row-title">${esc(issue.title)}</span>
+    ${titleHtml}
   </div>
   <div class="iss-row-right">
     ${subtasksHtml}
@@ -1323,7 +1352,11 @@ function issueListRow(issue: IssueRow, comments: IssueCommentRow[]): string {
 </div>`;
 }
 
-function renderIssuesList(byState: Map<IssueState, IssueRow[]>, comments: IssueCommentRow[]): string {
+function renderIssuesList(
+  byState: Map<IssueState, IssueRow[]>,
+  comments: IssueCommentRow[],
+  inspectHrefFor?: (issueId: string) => string,
+): string {
   const listStates: IssueState[] = ['IN PROGRESS', 'TO DO', 'BACKLOG', 'DONE'];
   return listStates
     .map((state) => {
@@ -1337,7 +1370,7 @@ function renderIssuesList(byState: Map<IssueState, IssueRow[]>, comments: IssueC
         <span class="iss-list-group-count">${issues.length}</span>
       </div>
       <div class="iss-list-rows" data-state="${esc(state)}">
-        ${issues.map((i) => issueListRow(i, comments)).join('\n')}
+        ${issues.map((i) => issueListRow(i, comments, inspectHrefFor)).join('\n')}
       </div>
     </div>`;
     })
@@ -1361,6 +1394,20 @@ export interface IssuesBoardOptions {
   /** Viewers besides the current user, for the assignee picker. */
   engineers: { email: string; name: string }[];
   currentEmail: string;
+  /**
+   * The inspector trigger for a list row. Supplied by the route: the list view
+   * is the board's table surface, so it is where a row opens its context beside
+   * the list. The board's cards are not triggers — a card is dragged, and a
+   * drag that can also be a link is a bug waiting to happen.
+   */
+  inspectHrefFor?: (issueId: string) => string;
+  /**
+   * Which view this response is *about*. The board and the list are two views
+   * of one read, and a selected issue has to be shareable in the view that
+   * shows it — which is why this is server-rendered rather than left to the
+   * `localStorage` preference the switcher writes.
+   */
+  view?: 'board' | 'list';
   syncConfig?: GitHubSyncConfig | null;
   /**
    * The last outbound push failure, if any.
@@ -1377,7 +1424,8 @@ export interface IssuesBoardOptions {
  * Supports both Board (Kanban) and List (Table) views with instant live search.
  */
 export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions): string {
-  const { csrf, home, engineers, currentEmail, syncConfig, pushError } = opts;
+  const { csrf, home: _home, engineers, currentEmail, syncConfig, pushError, inspectHrefFor } = opts;
+  const view: 'board' | 'list' = opts.view === 'list' ? 'list' : 'board';
   const byState = new Map<IssueState, IssueRow[]>();
   for (const s of ISSUE_STATES) byState.set(s, []);
   for (const issue of data.issues) byState.get(issue.state)?.push(issue);
@@ -1501,6 +1549,10 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   .iss-row-status { display:inline-grid; place-items:center; flex-shrink:0; }
   .iss-row-title { font-size:13.5px; font-weight:500; color:var(--v-ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
   .iss-list-row:hover .iss-row-title { color:var(--v-accent); }
+  /* The title is the row's inspector trigger: a real link, styled as the text
+     it has always been, so the row reads the same with the panel or without. */
+  a.iss-row-title { text-decoration:none; color:inherit; }
+  a.iss-row-title:hover { color:var(--v-accent); }
   
   .iss-pill-subtask { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; color:var(--v-ink-2); background:var(--v-bg-2); border-radius:var(--radius-pill); padding:2px 8px; }
   .iss-subtask-icon { font-size:9px; opacity:0.75; }
@@ -1535,7 +1587,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   .iss-flash.iss-error { background:var(--v-risk); color:var(--v-bg-1); }
   .iss-hidden { display:none !important; }
 </style>
-<div class="iss-board" id="iss-board" data-csrf="${esc(csrf)}" data-home="${esc(home)}" data-server-time="${esc(data.serverTime)}">
+<div class="iss-board" id="iss-board" data-csrf="${esc(csrf)}" data-server-time="${esc(data.serverTime)}">
   <div class="iss-toolbar">
     <div class="iss-search-box">
       <span class="iss-search-icon">🔍</span>
@@ -1543,11 +1595,11 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
     </div>
     <span class="iss-spacer"></span>
     <div class="iss-view-switcher" role="radiogroup" aria-label="View mode">
-      <button type="button" class="iss-view-btn active" id="iss-view-board" data-view="board" title="Board View">
+      <button type="button" class="iss-view-btn${view === 'board' ? ' active' : ''}" id="iss-view-board" data-view="board" aria-pressed="${view === 'board' ? 'true' : 'false'}" title="Board View">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v11A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-11zM9 2.5A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v6A1.5 1.5 0 0 1 13.5 10h-3A1.5 1.5 0 0 1 9 8.5v-6z"/></svg>
         Board
       </button>
-      <button type="button" class="iss-view-btn" id="iss-view-list" data-view="list" title="List View">
+      <button type="button" class="iss-view-btn${view === 'list' ? ' active' : ''}" id="iss-view-list" data-view="list" aria-pressed="${view === 'list' ? 'true' : 'false'}" title="List View">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm3.5-.5a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5A.75.75 0 0 1 6 2.5zm-3.5 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm3.5-.5a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5A.75.75 0 0 1 6 8zm-3.5 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm3.5-.5a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1-.75-.75z"/></svg>
         List
       </button>
@@ -1564,18 +1616,18 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   </div>
 
   <!-- Board View (Kanban) -->
-  <div class="iss-columns" id="iss-columns">
+  <div class="iss-columns" id="iss-columns"${view === 'list' ? ' style="display:none;"' : ''}>
     ${columns}
   </div>
 
   <!-- List View (Table / Grouped by State) -->
-  <div class="iss-list-container" id="iss-list-container" style="display:none;">
-    ${renderIssuesList(byState, data.comments)}
+  <div class="iss-list-container" id="iss-list-container"${view === 'board' ? ' style="display:none;"' : ''}>
+    ${renderIssuesList(byState, data.comments, inspectHrefFor)}
   </div>
 
   <!-- New-issue dialog -->
   <div class="iss-dialog-backdrop" id="iss-dialog">
-    <form class="iss-dialog" id="iss-create-form" method="post" action="${esc(home)}console/issues/create">
+    <form class="iss-dialog" id="iss-create-form" method="post" action="/console/issues/create">
       <input type="hidden" name="csrf" value="${esc(csrf)}">
       <h3>New issue</h3>
       <div class="iss-field">
@@ -1667,7 +1719,6 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
 (function () {
   var board = document.getElementById('iss-board');
   if (!board) return;
-  var home = board.dataset.home || '';
   var csrf = board.dataset.csrf || '';
   var watermark = board.dataset.serverTime || new Date().toISOString();
   var currentEmail = ${JSON.stringify(currentEmail)};
@@ -1962,6 +2013,17 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       '</div></article>';
   }
 
+  // The inspector trigger for a list row, built the same way the server built
+  // it: the current URL with the selection set, filters untouched. Live sync
+  // re-uses it, so a row the server never rendered and a row it did render are
+  // the same markup — the table has one shape, not two.
+  function inspectHrefFor(id) {
+    var u = new URL(window.location.href);
+    u.searchParams.set('inspect', 'issue:' + id);
+    u.searchParams.delete('fragment');
+    return u.pathname + u.search;
+  }
+
   function listRowHtml(issue, commentCount) {
     var key = formatIssueKeyClient(issue);
     var subtasks = extractSubtasksClient(issue);
@@ -2007,7 +2069,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
         prioritySignalSvgClient(issue.priority) +
         '<span class="iss-row-key">' + escHtml(key) + '</span>' +
         statusIndicatorSvgClient(issue.state, issue.progress || 0) +
-        '<span class="iss-row-title">' + escHtml(issue.title) + '</span>' +
+        '<a class="iss-row-title" href="' + escHtml(inspectHrefFor(issue.id)) + '" data-inspect="issue:' + escHtml(issue.id) + '">' + escHtml(issue.title) + '</a>' +
       '</div>' +
       '<div class="iss-row-right">' +
         subtasksHtml +
@@ -2076,7 +2138,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
 
   // ---- bidirectional sync: poll, apply deltas, advance watermark ----
   function tick() {
-    fetch(home + 'console/issues/sync?since=' + encodeURIComponent(watermark), { headers: { 'accept': 'application/json' } })
+    fetch('/console/issues/sync?since=' + encodeURIComponent(watermark), { headers: { 'accept': 'application/json' } })
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (data) {
         if (!data || !data.ok || !data.snapshot) return;
@@ -2150,6 +2212,8 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
   var listView = document.getElementById('iss-list-container');
 
   function setView(view) {
+    if (btnList) btnList.setAttribute('aria-pressed', view === 'list' ? 'true' : 'false');
+    if (btnBoard) btnBoard.setAttribute('aria-pressed', view === 'board' ? 'true' : 'false');
     if (view === 'list') {
       if (btnList) btnList.classList.add('active');
       if (btnBoard) btnBoard.classList.remove('active');
@@ -2200,7 +2264,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       body.set('csrf', csrf);
       body.set('issueId', id);
       body.set('state', state);
-      fetch(home + 'console/issues/move', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+      fetch('/console/issues/move', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || 'move failed');
@@ -2284,7 +2348,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
         submitBtn.disabled = true;
         submitBtn.textContent = 'Creating...';
       }
-      fetch(home + 'console/issues/create', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+      fetch('/console/issues/create', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || 'create failed');
@@ -2325,7 +2389,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
     if (!ghDialog) return;
     if (ghError) ghError.style.display = 'none';
     ghDialog.classList.add('iss-open');
-    fetch(home + 'console/issues/github/config', { headers: { accept: 'application/json' } })
+    fetch('/console/issues/github/config', { headers: { accept: 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data && data.ok && data.config && data.config.repo) {
@@ -2356,7 +2420,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
     e.preventDefault();
     if (!window.confirm('Unlink this GitHub repository? Local issues stay; the token is forgotten and pushes stop.')) return;
     ghUnlink.disabled = true;
-    fetch(home + 'console/issues/github/unlink', {
+    fetch('/console/issues/github/unlink', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: 'csrf=' + encodeURIComponent(csrf),
@@ -2409,7 +2473,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       body.set('repo', repo);
       if (token) body.set('token', token);
 
-      fetch(home + 'console/issues/github/authorize', {
+      fetch('/console/issues/github/authorize', {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -2444,7 +2508,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       if (ghError) ghError.style.display = 'none';
       var body = new URLSearchParams();
       body.set('csrf', csrf);
-      fetch(home + 'console/issues/github/sync', {
+      fetch('/console/issues/github/sync', {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -2478,7 +2542,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
     detail.innerHTML = '<p style="color:var(--v-muted);font-size:12.5px;">Loading…</p>';
     detail.classList.add('iss-open');
     detail.setAttribute('aria-hidden', 'false');
-    fetch(home + 'console/issues/detail?id=' + encodeURIComponent(id), { headers: { 'accept': 'application/json' } })
+    fetch('/console/issues/detail?id=' + encodeURIComponent(id), { headers: { 'accept': 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.ok) throw new Error(data.error || 'not found');
@@ -2493,6 +2557,16 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
     detail.setAttribute('aria-hidden', 'true');
     detail.dataset.issueId = '';
   }
+  // The inspector panel's "Open issue detail" exit. It is a real link to a real
+  // destination; with JavaScript it opens the board's own drawer instead of
+  // navigating, because the drawer is the only editor the board has.
+  document.addEventListener('click', function (e) {
+    var node = e.target && e.target.closest ? e.target.closest('[data-issue-open]') : null;
+    if (!node) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    e.preventDefault();
+    openDetail(node.getAttribute('data-issue-open'));
+  });
   detail.addEventListener('click', function (e) {
     if (e.target === detail) closeDetail();
   });
@@ -2567,7 +2641,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       var fd = new FormData(e.target);
       var body = new URLSearchParams();
       ['csrf', 'issueId', 'expectedUpdatedAt', 'title', 'description', 'state', 'priority', 'progress'].forEach(function (k) { body.set(k, fd.get(k) || ''); });
-      fetch(home + 'console/issues/update', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+      fetch('/console/issues/update', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || 'update failed');
@@ -2581,7 +2655,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       var body = new URLSearchParams();
       body.set('csrf', csrf);
       body.set('issueId', issue.id);
-      fetch(home + 'console/issues/delete', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+      fetch('/console/issues/delete', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || 'delete failed');
@@ -2600,7 +2674,7 @@ export function renderIssuesBoard(data: IssueSnapshot, opts: IssuesBoardOptions)
       var fd = new FormData(e.target);
       var body = new URLSearchParams();
       ['csrf', 'issueId', 'content'].forEach(function (k) { body.set(k, fd.get(k) || ''); });
-      fetch(home + 'console/issues/comment', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+      fetch('/console/issues/comment', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || 'comment failed');

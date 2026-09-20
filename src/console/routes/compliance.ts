@@ -139,7 +139,7 @@ export function complianceRoutes(): RouteDef<ComplianceEnv>[] {
         if ((fields.confirmSlug ?? '').trim() !== ctx.env.tenant || fields.confirmed !== 'on') {
           ctx.env.redirect(
             ctx.res,
-            `${ctx.env.home}/data?error=${encodeURIComponent('Typed confirmation did not match organization slug.')}`,
+            `/console/data?error=${encodeURIComponent('Typed confirmation did not match organization slug.')}`,
           );
           return;
         }
@@ -150,7 +150,7 @@ export function complianceRoutes(): RouteDef<ComplianceEnv>[] {
           ctx.env.redirect(ctx.res, `/receipts/erasure/${encodeURIComponent(ctx.env.tenant)}`, { clearSession: true });
           return;
         } catch (e) {
-          ctx.env.redirect(ctx.res, `${ctx.env.home}/data?error=${encodeURIComponent((e as Error).message)}`);
+          ctx.env.redirect(ctx.res, `/console/data?error=${encodeURIComponent((e as Error).message)}`);
         }
       },
     },

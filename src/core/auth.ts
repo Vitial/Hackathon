@@ -108,7 +108,49 @@ export interface Tenant {
   slug: string;
   name: string;
   createdAt: string;
+  /** Lifecycle for multi-org self-serve. Pre-0006 rows read back as 'active'. */
+  status?: TenantStatus;
+  /** Paid-only plan tier. Pre-0006 rows read back as 'starter'. */
+  plan?: TenantPlan;
+  requestedByEmail?: string | null;
+  billingEmail?: string | null;
+  mfaRequired?: boolean;
+  ssoEnforced?: boolean;
+  dataRetentionDays?: number | null;
+  updatedAt?: string | null;
 }
+
+/**
+ * Multi-org lifecycle (P0): open signup creates `pending_approval`, an
+ * operator approves to `approved_pending_payment`, Stripe webhook flips to
+ * `active`. `suspended`/`cancelled` block sign-in but retain data per
+ * retention policy until erasure.
+ */
+export type TenantStatus = 'pending_approval' | 'approved_pending_payment' | 'active' | 'suspended' | 'cancelled';
+
+/** Paid-only tiers — no free plan exists by design. */
+export type TenantPlan = 'starter' | 'growth' | 'enterprise';
+
+/** Slugs that can never be an org subdomain (central app, infra, spoof targets). */
+export const RESERVED_SLUGS: readonly string[] = [
+  'www',
+  'app',
+  'api',
+  'admin',
+  'support',
+  'status',
+  'mail',
+  'smtp',
+  'static',
+  'assets',
+  'cdn',
+  'auth',
+  'login',
+  'signup',
+  'billing',
+  'stripe',
+  'webhook',
+];
 
 // ------------------------------------------------------------------ schema ----
 
@@ -256,6 +298,37 @@ DROP TABLE IF EXISTS mfa_recovery_codes;
 DROP TABLE IF EXISTS email_verifications;
 `,
   },
+  {
+    name: '0006_tenant_lifecycle',
+    up: `
+ALTER TABLE tenants ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE tenants ADD COLUMN plan TEXT NOT NULL DEFAULT 'starter';
+ALTER TABLE tenants ADD COLUMN requested_by_email TEXT;
+ALTER TABLE tenants ADD COLUMN billing_email TEXT;
+ALTER TABLE tenants ADD COLUMN approved_by TEXT;
+ALTER TABLE tenants ADD COLUMN approved_at TEXT;
+ALTER TABLE tenants ADD COLUMN rejected_reason TEXT;
+ALTER TABLE tenants ADD COLUMN mfa_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tenants ADD COLUMN sso_enforced INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tenants ADD COLUMN data_retention_days INTEGER;
+ALTER TABLE tenants ADD COLUMN updated_at TEXT;
+CREATE INDEX IF NOT EXISTS ix_tenants_status ON tenants(status);
+`,
+    down: `
+DROP INDEX IF EXISTS ix_tenants_status;
+ALTER TABLE tenants DROP COLUMN updated_at;
+ALTER TABLE tenants DROP COLUMN data_retention_days;
+ALTER TABLE tenants DROP COLUMN sso_enforced;
+ALTER TABLE tenants DROP COLUMN mfa_required;
+ALTER TABLE tenants DROP COLUMN rejected_reason;
+ALTER TABLE tenants DROP COLUMN approved_at;
+ALTER TABLE tenants DROP COLUMN approved_by;
+ALTER TABLE tenants DROP COLUMN billing_email;
+ALTER TABLE tenants DROP COLUMN requested_by_email;
+ALTER TABLE tenants DROP COLUMN plan;
+ALTER TABLE tenants DROP COLUMN status;
+`,
+  },
 ];
 
 /** Idle session lifetime. Rolling: each successful touch re-arms the full window. */
@@ -399,10 +472,17 @@ export async function signupTenant(
       .prepare('SELECT 1 AS n FROM audit_log WHERE tenant = ? AND action = ? LIMIT 1')
       .get(erasedTenantOf(slug), ERASURE_DONE_ACTION)) as { n: number } | undefined;
     if (erased) throw new AuthError('SLUG_RESERVED', `tenant slug "${slug}" was erased and cannot be reused`);
-    const tenant: Tenant = { slug, name: input.name.trim(), createdAt: now };
+    const tenant: Tenant = { slug, name: input.name.trim(), createdAt: now, status: 'active', plan: 'starter' };
     await db
       .prepare('INSERT INTO tenants (slug, name, created_at) VALUES (?, ?, ?)')
       .run(tenant.slug, tenant.name, now);
+    try {
+      await db
+        .prepare("UPDATE tenants SET status = 'active', plan = 'starter', updated_at = ? WHERE slug = ?")
+        .run(now, tenant.slug);
+    } catch {
+      // Pre-0006 stores without the lifecycle columns: the base row above is enough.
+    }
     const owner = await insertUser(db, tenant.slug, {
       email,
       name: input.ownerName.trim(),
@@ -418,9 +498,291 @@ export async function signupTenant(
 }
 
 export async function getTenant(db: AsyncDb, slug: string): Promise<Tenant | undefined> {
-  const r = await db.prepare('SELECT slug, name, created_at FROM tenants WHERE slug = ?').get(slug);
-  if (!r) return undefined;
-  return { slug: String(r.slug), name: String(r.name), createdAt: String(r.created_at) };
+  // One statement, lifecycle columns included. This runs for every request that
+  // has a session — `/login`, the console shell, every page that names its org —
+  // so a second SELECT here is a second round trip on all of them. The per-page
+  // statement budgets in `test/routes.test.ts` are how that regression was
+  // caught, and why the base row and the 0006 columns are read together.
+  try {
+    const r = (await db
+      .prepare(
+        'SELECT slug, name, created_at, status, plan, requested_by_email, billing_email, mfa_required, sso_enforced, data_retention_days, updated_at FROM tenants WHERE slug = ?',
+      )
+      .get(slug)) as Record<string, unknown> | undefined;
+    return r ? tenantFromRow(r) : undefined;
+  } catch (e) {
+    // The one case that cannot use that row: a store that predates 0006 and has
+    // never been migrated, where the columns do not exist. Only that failure is
+    // answered with defaults — a locked database or a broken connection is a
+    // real failure and must reach the caller.
+    if (!isMissingColumn(e)) throw e;
+    const r = (await db.prepare('SELECT slug, name, created_at FROM tenants WHERE slug = ?').get(slug)) as
+      Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    return {
+      slug: String(r.slug),
+      name: String(r.name),
+      createdAt: String(r.created_at),
+      status: 'active',
+      plan: 'starter',
+    };
+  }
+}
+
+/** One `tenants` row (base + 0006 columns) as the Tenant it describes. */
+function tenantFromRow(r: Record<string, unknown>): Tenant {
+  return {
+    slug: String(r.slug),
+    name: String(r.name),
+    createdAt: String(r.created_at),
+    status: parseTenantStatus(r.status),
+    plan: parseTenantPlan(r.plan),
+    requestedByEmail: r.requested_by_email == null ? null : String(r.requested_by_email),
+    billingEmail: r.billing_email == null ? null : String(r.billing_email),
+    mfaRequired: Number(r.mfa_required ?? 0) === 1,
+    ssoEnforced: Number(r.sso_enforced ?? 0) === 1,
+    dataRetentionDays: r.data_retention_days == null ? null : Number(r.data_retention_days),
+    updatedAt: r.updated_at == null ? null : String(r.updated_at),
+  };
+}
+
+/**
+ * True when a failure is "this store has no such column" — the only error the
+ * pre-0006 fallback above exists for. Matches SQLite's `no such column` and
+ * Postgres' `column "x" does not exist`.
+ */
+function isMissingColumn(e: unknown): boolean {
+  const message = String((e as Error | undefined)?.message ?? '');
+  return /no such column|has no column named|column .* does not exist/i.test(message);
+}
+
+export function parseTenantStatus(v: unknown): TenantStatus {
+  if (
+    v === 'pending_approval' ||
+    v === 'approved_pending_payment' ||
+    v === 'active' ||
+    v === 'suspended' ||
+    v === 'cancelled'
+  )
+    return v;
+  return 'active';
+}
+
+export function parseTenantPlan(v: unknown): TenantPlan {
+  if (v === 'starter' || v === 'growth' || v === 'enterprise') return v;
+  return 'starter';
+}
+
+/** True when sign-in (password or SSO) may proceed for this tenant. */
+export function tenantCanSignIn(t: Pick<Tenant, 'status'> | undefined): boolean {
+  return (t?.status ?? 'active') === 'active';
+}
+
+/**
+ * The one sentence a blocked sign-in gets, per lifecycle state. One copy, so
+ * the password path and the session path refuse in the same words.
+ */
+export function tenantStatusMessage(status: TenantStatus | undefined): string {
+  if (status === 'pending_approval') return 'organization is awaiting approval';
+  if (status === 'approved_pending_payment') return 'organization subscription is not active yet — complete checkout';
+  return 'organization subscription is not active — contact billing';
+}
+
+// ------------------------------------------------- multi-org registration ----
+
+/** Normalize a Host header (`Acme.App.COM:3100` → `acme.app.com`). */
+export function normalizeHost(host: unknown): string {
+  return String(host ?? '')
+    .trim()
+    .toLowerCase()
+    .split(',')[0]!
+    .trim()
+    .split(':')[0]!
+    .trim()
+    .replace(/\.+$/, '');
+}
+
+/**
+ * Resolve which tenant a request belongs to from the Host header.
+ *
+ * - `<slug>.<baseDomain>` → that slug (subdomain per org).
+ * - bare `baseDomain` / `www.baseDomain` / unknown host → `fallback`
+ *   (the central marketing/signup surface, still single-tenant bound).
+ * - no baseDomain configured → always `fallback` (legacy single-tenant mode).
+ */
+export function resolveTenantFromHost(host: unknown, baseDomain: string | null | undefined, fallback: string): string {
+  const h = normalizeHost(host);
+  const base = String(baseDomain ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+/, '')
+    .replace(/\.+$/, '');
+  if (!h || !base) return fallback;
+  if (h === base || h === `www.${base}`) return fallback;
+  if (h.endsWith(`.${base}`)) {
+    const sub = h.slice(0, h.length - base.length - 1);
+    if (!sub || sub.includes('.') || !SLUG_RE.test(sub)) return fallback;
+    if ((RESERVED_SLUGS as readonly string[]).includes(sub)) return fallback;
+    return sub;
+  }
+  return fallback;
+}
+
+/** Reserved subdomains can never be claimed as an org slug. */
+export function isReservedSlug(slug: string): boolean {
+  return (RESERVED_SLUGS as readonly string[]).includes(slug.trim().toLowerCase());
+}
+
+/** Uniform availability check: reserved, malformed, taken, or erased. */
+export async function isSlugAvailable(db: AsyncDb, slug: string): Promise<{ available: boolean; reason: string }> {
+  const s = slug.trim().toLowerCase();
+  if (!SLUG_RE.test(s)) return { available: false, reason: 'invalid' };
+  if (isReservedSlug(s)) return { available: false, reason: 'reserved' };
+  const exists = await db.prepare('SELECT slug FROM tenants WHERE slug = ?').get(s);
+  if (exists) return { available: false, reason: 'taken' };
+  try {
+    const erased = (await db
+      .prepare('SELECT 1 AS n FROM audit_log WHERE tenant = ? AND action = ? LIMIT 1')
+      .get(erasedTenantOf(s), ERASURE_DONE_ACTION)) as { n: number } | undefined;
+    if (erased) return { available: false, reason: 'reserved' };
+  } catch {
+    // Audit store without erasure receipts: nothing reserved.
+  }
+  return { available: true, reason: 'available' };
+}
+
+export interface TenantRegistrationRequest {
+  slug: string;
+  name: string;
+  email: string;
+  ownerName: string;
+  plan?: TenantPlan;
+}
+
+/**
+ * Open registration (paid-only, approval-gated): creates a `pending_approval`
+ * tenant row with NO users. An operator approves, then billing activates.
+ */
+export async function requestTenantRegistration(
+  db: AsyncDb,
+  input: TenantRegistrationRequest,
+  now: string,
+): Promise<Tenant> {
+  const slug = input.slug.trim().toLowerCase();
+  const email = input.email.trim().toLowerCase();
+  if (!SLUG_RE.test(slug)) throw new AuthError('BAD_SLUG', 'tenant slug must be 2-63 chars of a-z, 0-9 and hyphens');
+  if (isReservedSlug(slug)) throw new AuthError('SLUG_RESERVED', `tenant slug "${slug}" is reserved`);
+  if (!input.name.trim()) throw new AuthError('BAD_NAME', 'tenant name is required');
+  if (!EMAIL_RE.test(email)) throw new AuthError('BAD_EMAIL', 'a valid email is required');
+  if (!input.ownerName.trim()) throw new AuthError('BAD_NAME', 'owner name is required');
+  const plan = parseTenantPlan(input.plan ?? 'starter');
+  return db.transaction(async () => {
+    const avail = await isSlugAvailable(db, slug);
+    if (!avail.available)
+      throw new AuthError(
+        avail.reason === 'taken' ? 'TENANT_EXISTS' : 'SLUG_RESERVED',
+        `tenant slug "${slug}" is not available (${avail.reason})`,
+      );
+    await db.prepare('INSERT INTO tenants (slug, name, created_at) VALUES (?, ?, ?)').run(slug, input.name.trim(), now);
+    try {
+      await db
+        .prepare(
+          "UPDATE tenants SET status = 'pending_approval', plan = ?, requested_by_email = ?, billing_email = ?, updated_at = ? WHERE slug = ?",
+        )
+        .run(plan, email, email, now, slug);
+    } catch {
+      throw new AuthError(
+        'REGISTRATION_UNSUPPORTED',
+        'this store predates tenant lifecycle columns — run migrations first',
+      );
+    }
+    try {
+      await audit(db, slug, `registration:${email}`, 'auth.tenant_requested', `tenant:${slug}`, now, `plan=${plan}`);
+    } catch {
+      // Audit store unavailable in minimal test DBs: registration still stands.
+    }
+    const created = (await getTenant(db, slug))!;
+    return created;
+  });
+}
+
+/** Operator approval: pending → approved_pending_payment (billing activates later). */
+export async function approveTenantRegistration(
+  db: AsyncDb,
+  slug: string,
+  by: { userId: string; email?: string },
+  now: string,
+): Promise<Tenant> {
+  const s = slug.trim().toLowerCase();
+  return db.transaction(async () => {
+    const t = await getTenant(db, s);
+    if (!t) throw new AuthError('UNKNOWN_TENANT', `tenant "${s}" does not exist`);
+    if ((t.status ?? 'active') !== 'pending_approval')
+      throw new AuthError('BAD_TENANT_STATE', `tenant "${s}" is not awaiting approval`);
+    await db
+      .prepare('UPDATE tenants SET status = ?, approved_by = ?, approved_at = ?, updated_at = ? WHERE slug = ?')
+      .run('approved_pending_payment', by.userId, now, now, s);
+    await audit(db, s, by.userId, 'auth.tenant_approved', `tenant:${s}`, now);
+    return (await getTenant(db, s))!;
+  });
+}
+
+/** Operator rejection with a reason (surfaces on the central status page). */
+export async function rejectTenantRegistration(
+  db: AsyncDb,
+  slug: string,
+  by: { userId: string },
+  reason: string,
+  now: string,
+): Promise<Tenant> {
+  const s = slug.trim().toLowerCase();
+  if (!reason.trim()) throw new AuthError('BAD_NAME', 'a rejection reason is required');
+  return db.transaction(async () => {
+    const t = await getTenant(db, s);
+    if (!t) throw new AuthError('UNKNOWN_TENANT', `tenant "${s}" does not exist`);
+    if ((t.status ?? 'active') !== 'pending_approval')
+      throw new AuthError('BAD_TENANT_STATE', `tenant "${s}" is not awaiting approval`);
+    await db
+      .prepare('UPDATE tenants SET status = ?, rejected_reason = ?, updated_at = ? WHERE slug = ?')
+      .run('cancelled', reason.trim().slice(0, 500), now, s);
+    await audit(db, s, by.userId, 'auth.tenant_rejected', `tenant:${s}`, now, reason.trim().slice(0, 200));
+    return (await getTenant(db, s))!;
+  });
+}
+
+/** Billing/operator activation gate: only `active` tenants may sign in. */
+export async function setTenantStatus(
+  db: AsyncDb,
+  slug: string,
+  status: TenantStatus,
+  by: { userId: string },
+  now: string,
+): Promise<Tenant> {
+  const s = slug.trim().toLowerCase();
+  return db.transaction(async () => {
+    const t = await getTenant(db, s);
+    if (!t) throw new AuthError('UNKNOWN_TENANT', `tenant "${s}" does not exist`);
+    await db.prepare('UPDATE tenants SET status = ?, updated_at = ? WHERE slug = ?').run(status, now, s);
+    await audit(db, s, by.userId, 'auth.tenant_status', `tenant:${s}`, now, `status=${status}`);
+    return (await getTenant(db, s))!;
+  });
+}
+
+/** Approval queue for the operator console. */
+export async function listTenantsByStatus(db: AsyncDb, status: TenantStatus): Promise<Tenant[]> {
+  try {
+    const rows = (await db.prepare('SELECT slug FROM tenants WHERE status = ? ORDER BY created_at').all(status)) as {
+      slug: string;
+    }[];
+    const out: Tenant[] = [];
+    for (const r of rows) {
+      const t = await getTenant(db, String(r.slug));
+      if (t) out.push(t);
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -1431,6 +1793,15 @@ export async function startSessionForUser(
   const user = await getUser(db, tenant, userId);
   if (!user) throw new AuthError('UNKNOWN_USER', `no user ${userId} in tenant ${tenant}`);
   if (user.disabled) throw new AuthError('DISABLED_USER', 'account is disabled');
+  // Paid-only gate: pending/suspended/cancelled tenants never mint sessions,
+  // through password login or the MFA completion path (both funnel here).
+  try {
+    const t = await getTenant(db, tenant);
+    if ((t?.status ?? 'active') !== 'active') throw new AuthError('TENANT_SUSPENDED', tenantStatusMessage(t?.status));
+  } catch (e) {
+    if (e instanceof AuthError) throw e;
+    // Pre-0006 stores / minimal test DBs: no lifecycle to enforce.
+  }
   const { session, token } = await createSession(db, user, now);
   await db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, user.id);
   // NOTE: must_change_password is deliberately NOT cleared here. The flag
@@ -1490,12 +1861,48 @@ export async function verifySession(db: AsyncDb, token: string, now: string): Pr
   return { ...session, expiresAt };
 }
 
+/**
+ * The session's user row, and the org status the billing gate reads, from one
+ * statement.
+ *
+ * This is the identity read every request pays for, so the tenant's status is
+ * read *with* the user row rather than after it: a second SELECT here is one
+ * more round trip on every page in the console, and the per-page statement
+ * budgets in `test/routes.test.ts` are where that showed up. `status` is null
+ * for a store that predates 0006 and for a user whose tenant row is gone, and
+ * null reads as `active` — what the migration's default would have written.
+ *
+ * A pre-0006 store cannot select the column at all, so it takes the two-read
+ * path instead: correct, and paid for once by a store that has not migrated.
+ */
+async function userAndTenantStatus(db: AsyncDb, userId: string): Promise<{ user: Row; status: TenantStatus }> {
+  try {
+    const row = (await db
+      .prepare(
+        'SELECT u.*, t.status AS tenant_status FROM users u LEFT JOIN tenants t ON t.slug = u.tenant WHERE u.id = ?',
+      )
+      .get(userId)) as (Row & { tenant_status?: unknown }) | undefined;
+    if (!row) throw new AuthError('NO_SESSION', 'session user is gone');
+    return { user: row, status: parseTenantStatus(row.tenant_status) };
+  } catch (e) {
+    if (!isMissingColumn(e)) throw e;
+    const row = (await db.prepare('SELECT * FROM users WHERE id = ?').get(userId)) as Row | undefined;
+    if (!row) throw new AuthError('NO_SESSION', 'session user is gone');
+    const t = await getTenant(db, String(row.tenant));
+    return { user: row, status: t?.status ?? 'active' };
+  }
+}
+
 /** Resolve the full user for a session — the identity every route must use. */
 export async function sessionUser(db: AsyncDb, token: string, now: string): Promise<{ session: Session; user: User }> {
   const session = await verifySession(db, token, now);
-  const user = (await db.prepare('SELECT * FROM users WHERE id = ?').get(session.userId)) as Row;
+  const { user, status } = await userAndTenantStatus(db, session.userId);
   const u = rowToUser(user);
   if (u.tenant !== session.tenant) throw new AuthError('TENANT_MISMATCH', 'session tenant does not match user');
+  // Suspended/cancelled tenants lose live sessions immediately (billing
+  // enforcement). This is the read `userAndTenantStatus` folded in, so the gate
+  // costs no statement of its own.
+  if (status !== 'active') throw new AuthError('TENANT_SUSPENDED', tenantStatusMessage(status));
   return { session, user: u };
 }
 

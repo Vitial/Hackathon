@@ -256,7 +256,7 @@ function headlineFor(journey: TenantJourney, signedUp: string | null): string {
   return `Next: ${esc(journey.stages[journey.currentIndex]!.label)}.`;
 }
 
-export function renderJourneyMilestone(journey: TenantJourney, home: string): string {
+export function renderJourneyMilestone(journey: TenantJourney, _home: string): string {
   const signedUp = journey.stages[0]!.at;
   const doneCount = journey.stages.filter((s) => s.at !== null).length;
   const items = journey.stages
@@ -295,7 +295,7 @@ export function renderJourneyMilestone(journey: TenantJourney, home: string): st
     <h2 class="v-card-title" style="margin-top:4px;font-size:17px;font-weight:650;color:var(--v-ink);">${doneCount} of ${journey.stages.length} milestones recorded</h2>
   </div>
   <div style="display:flex;gap:8px;">
-    <a href="${esc(home)}console/requests" class="v-btn v-btn-secondary" style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:9999px;font-size:12px;font-weight:500;text-decoration:none;border:1px solid var(--v-line);background:var(--v-bg-1);color:var(--v-ink-2);">Review queue</a>
+    <a href="/console/requests" class="v-btn v-btn-secondary" style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:9999px;font-size:12px;font-weight:500;text-decoration:none;border:1px solid var(--v-line);background:var(--v-bg-1);color:var(--v-ink-2);">Review queue</a>
     <a href="/setup" class="v-btn v-btn-secondary" style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:9999px;font-size:12px;font-weight:500;text-decoration:none;border:1px solid var(--v-line);background:var(--v-bg-1);color:var(--v-ink-2);">Setup</a>
   </div>
 </div>

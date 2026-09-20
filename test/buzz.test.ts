@@ -856,9 +856,10 @@ T('Markdown-lite: room page renders agent markdown through the block renderer', 
     'local_general_agent',
     '## Status\n- **Spend**: ok\n```js\nx = 1\n```',
   );
-  const page = await renderBuzzRoom(db, TEN, 'general', '/', 'csrf_test');
-  eq(typeof page === 'string', true, 'room page renders:');
-  if (typeof page !== 'string') return;
+  const view = await renderBuzzRoom(db, TEN, 'general', '/', 'csrf_test');
+  eq(view !== null, true, 'room page renders:');
+  if (!view) return;
+  const page = view.body;
   eq(page.includes('buzz-md-h--2'), true, 'heading block in page:');
   eq(page.includes('buzz-md-list'), true, 'list block in page:');
   eq(page.includes('<pre class="buzz-md-pre" data-lang="js">'), true, 'code block in page:');

@@ -734,6 +734,101 @@ T('a meeting is addressed by id: the ?id= aliases are no longer routes', async (
   }
 });
 
+T('co-hosted (siteDir): meetings link to literal /console paths, never a doubled prefix', async () => {
+  // Regression: when a marketing site is mounted, `home` is `/console`, and
+  // templates that joined `home + 'console/meetings'` produced
+  // `/console/console/meetings/...` (and `home + 'api/meetings'` produced
+  // `/console/api/meetings/...`). Console routes and APIs dispatch at literal
+  // paths in both serve modes, so every emitted link is literal.
+  const { startConsoleServer } = await import('../src/console/serve.ts');
+  const { installAuthSchema, signupTenant } = await import('../src/core/auth.ts');
+  const { OrganizationalCompiler } = await import('../src/compiler/compiler.ts');
+  const ctx = await fresh();
+  const OWNER = { email: 'owner@acme.test', password: 'the-console-password' };
+  await installAuthSchema(ctx.db, '2026-09-09T12:00:00.000Z');
+  await signupTenant(
+    ctx.db,
+    { slug: TEN, name: 'Acme', email: OWNER.email, password: OWNER.password, ownerName: 'Ada' },
+    '2026-09-09T12:00:00.000Z',
+  );
+  const comp = new OrganizationalCompiler(ctx.db);
+  const server = await startConsoleServer(ctx.db, ctx.ledger, ctx.coord, comp, {
+    tenant: TEN,
+    now: () => '2026-09-09T12:00:00.000Z',
+    siteDir: 'site',
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const pre = await fetch(`${base}/login`, { redirect: 'manual' });
+    const preCookie = (pre.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');
+    const preToken = (await pre.text()).match(/name="csrf" value="([0-9a-f]+)"/)![1]!;
+    const loginRes = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { cookie: preCookie },
+      body: `csrf=${preToken}&email=${encodeURIComponent(OWNER.email)}&password=${encodeURIComponent(OWNER.password)}`,
+      redirect: 'manual',
+    });
+    const cookie = (loginRes.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');
+    const homeHtml = await (await fetch(`${base}/console`, { headers: { cookie } })).text();
+    const csrf = homeHtml.match(/name="vital-csrf" content="([0-9a-f]+)"/)![1]!;
+    const created = await fetch(`${base}/api/meetings`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json', 'x-vital-csrf': csrf },
+      body: JSON.stringify({ title: 'Co-hosted Meeting' }),
+    });
+    eq(created.status, 200, 'meeting created over the API:');
+    const mid = ((await created.json()) as { meeting: { id: string } }).meeting.id;
+
+    // Every surface that renders meeting links stays literal under co-hosting.
+    const library = await (await fetch(`${base}/console/meetings`, { headers: { cookie } })).text();
+    const detail = await (await fetch(`${base}/console/meetings/${mid}`, { headers: { cookie } })).text();
+    const room = await (await fetch(`${base}/console/meetings/${mid}/room`, { headers: { cookie } })).text();
+
+    for (const [name, html] of [
+      ['library', library],
+      ['detail', detail],
+      ['room', room],
+    ] as const) {
+      eq(html.includes('consoleconsole'), false, `${name}: no doubled console prefix:`);
+      eq(html.includes('/console/api/'), false, `${name}: no /console/api join:`);
+      eq(html.includes('href="/console/console'), false, `${name}: no /console/console href:`);
+    }
+    eq(
+      library.includes(`href="/console/meetings/${mid}/room"`) &&
+        library.includes(`onclick="copyCardMeetingLink('/console/meetings/${mid}/room'`),
+      true,
+      'library: join-room and copy-link point at literal /console/meetings/:id/room:',
+    );
+    eq(
+      detail.includes('href="/console/meetings"') &&
+        detail.includes(`fetch('/api/meetings/'`) &&
+        detail.includes(`window.location.href = '/console/meetings'`),
+      true,
+      'detail: back link and RAG/delete calls are literal:',
+    );
+    eq(
+      room.includes('href="/console/assets/meeting-room.css') && room.includes('src="/console/assets/meeting-room.js'),
+      true,
+      'room: assets are linked at literal /console/assets paths:',
+    );
+    const roomJs = await (await fetch(`${base}/console/assets/meeting-room.js`)).text();
+    eq(
+      roomJs.includes(`fetch('/api/meetings/'`) &&
+        roomJs.includes(`'/api/meetings/signal?meetingId='`) &&
+        roomJs.includes(`window.location.href = '/console/meetings`),
+      true,
+      'room-js: signaling, mutations, and navigation use literal /api and /console paths:',
+    );
+    eq(roomJs.includes("home + '"), false, 'room-js: no home-prefixed path joins remain:');
+    eq(roomJs.includes('var home ='), false, 'room-js: the dead data-home reader is gone:');
+    eq(roomJs.includes('consoleconsole'), false, 'room-js: no doubled console prefix:');
+    eq(roomJs.includes('/console/api/'), false, 'room-js: no /console/api join:');
+  } finally {
+    await server.close();
+    await ctx.db.close();
+  }
+});
+
 // --------------------------------------------------- 4. Room View & Signaling Hardening ----
 
 import { renderMeetingRoomView, meetingRoomAsset, meetingIceServers } from '../src/console/meetings.ts';

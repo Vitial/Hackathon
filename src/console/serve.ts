@@ -61,6 +61,7 @@ import {
   parseTeam,
   setupSecretOk,
   signupRequiresSetupSecret,
+  resolveTenantFromHost,
   CLEAR_SESSION_COOKIE,
   type DisableConfirmation,
   type Invitation,
@@ -202,6 +203,7 @@ import { observabilityRoutes, type ObservabilityEnv } from './routes/observabili
 import { complianceRoutes, type ComplianceEnv } from './routes/compliance.ts';
 import { requestsRoutes, type RequestsEnv } from './routes/requests.ts';
 import { listsRoutes, type ListsEnv } from './routes/lists.ts';
+import { feedRoutes, type FeedEnv } from './routes/feed.ts';
 import { agentTasksRoutes, type AgentTasksEnv } from './routes/agent-tasks.ts';
 import { learningRoutes, type LearningEnv } from './routes/learning.ts';
 import { reviewRoutes, type ReviewEnv } from './routes/review.ts';
@@ -240,7 +242,8 @@ import {
 import { recordReviewOutcome } from '../gov/review.ts';
 import { renderRoomsSetupPage, handleRoomsSetupPost } from './rooms-setup.ts';
 import { reviewSecretFromEnv, verifyReviewToken } from '../talk/review-card.ts';
-import { buildBuzzRoster, renderBuzzRoster, renderBuzzRoom } from './buzz.ts';
+import { buildBuzzRoster, renderBuzzRoster, renderBuzzRoom, renderBuzzRoomContext } from './buzz.ts';
+import { PANEL_DIGEST, PANEL_FRAGMENT_PARAM, PANEL_OPEN_PARAM, parseRecordRef } from './buzz-context.ts';
 import { buzzDocument, renderWorkspaceShell } from './workspace-shell.ts';
 import { renderConsoleShell } from './console-shell.ts';
 import {
@@ -434,10 +437,36 @@ export interface ConsoleServerOptions {
    */
   trustProxy?: boolean;
   /**
+   * Multi-org subdomain mode (P0): when set (e.g. `example.com`), requests
+   * to `<slug>.example.com` resolve to that tenant while the bare domain
+   * keeps serving the bound (central) tenant. Unset = legacy single-tenant
+   * mode: every request uses `tenant`. Also readable from `VITAL_BASE_DOMAIN`.
+   */
+  baseDomain?: string;
+  /**
    * Outbound HTTP for GitHub board sync, injected so tests can stub the network
    * instead of calling api.github.com. Defaults to the global `fetch`.
    */
   fetchFn?: typeof fetch;
+}
+
+/**
+ * Resolve the effective tenant for one HTTP request: subdomain per org when
+ * `baseDomain` is configured, else the server-bound tenant. Reserved/central
+ * hosts (`app`, `www`, the bare domain) always fall back — the central surface
+ * never serves an org's data.
+ *
+ * The rule itself lives in `core/auth` beside the slug rules it has to agree
+ * with: a reserved subdomain is one that can never be registered, so the two
+ * must read the same list rather than each keeping their own. This is the
+ * server's name for that decision, kept as the seam tests and callers use.
+ */
+export function resolveRequestTenant(
+  hostHeader: unknown,
+  baseDomain: string | null | undefined,
+  boundTenant: string,
+): string {
+  return resolveTenantFromHost(hostHeader, baseDomain, boundTenant);
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -573,6 +602,8 @@ async function wrapInWorkspaceShell(
   activeScope?: string | null,
   isDrawer?: boolean,
   precomputedMetrics?: import('./shell-metrics.ts').ShellMetrics | null,
+  /** The surface's record context region, when it has one (see workspace-shell). */
+  contextPanel?: string | null,
 ): Promise<string> {
   // The Workspace/chat pages render the Buzz shell (workspace-shell.ts) and
   // keep upstream Buzz's own document, fonts and palette; the Console pages
@@ -642,6 +673,7 @@ async function wrapInWorkspaceShell(
       tenant,
       metrics: shellMetrics,
       roomRecency: shellRecency,
+      contextPanel,
     });
     return html.slice(0, html.indexOf('<body>') + 6) + shell + html.slice(html.indexOf('</body>'));
   }
@@ -2428,6 +2460,10 @@ export function startConsoleServer(
   // flow and nothing on this line changes their behavior.
   const cognito = cognitoFromEnv();
   const trustProxy = opts.trustProxy ?? process.env.TRUST_PROXY === '1';
+  const baseDomain =
+    opts.baseDomain ??
+    process.env.VITAL_BASE_DOMAIN?.trim()?.toLowerCase()?.replace(/^\.+/, '')?.replace(/\.+$/, '') ??
+    null;
   const operatorKeys = opts.operatorKeys ?? [];
   for (const pem of operatorKeys) operatorKeyId(pem);
   const keyAuth = operatorKeys.length > 0;
@@ -2797,6 +2833,7 @@ export function startConsoleServer(
       ComplianceEnv &
       RequestsEnv &
       ListsEnv &
+      FeedEnv &
       LearningEnv &
       ReviewEnv &
       IssuesEnv &
@@ -2878,6 +2915,7 @@ export function startConsoleServer(
       ...complianceRoutes(),
       ...requestsRoutes(),
       ...listsRoutes(),
+      ...feedRoutes(),
       ...learningRoutes(),
       ...reviewRoutes(),
       ...issuesRoutes(),
@@ -3021,6 +3059,9 @@ export function startConsoleServer(
           // group probes it every 30s per task and it must stay constant-cost.
           const ip = resolveRequestContext(req, trustProxy).clientIp;
           const at = now();
+          // Subdomain mode: the Host header selects the org; without a
+          // baseDomain every request stays on the bound (single-tenant) slug.
+          const requestTenant = resolveRequestTenant(req.headers.host, baseDomain, tenant);
 
           const sessionToken = cookieValue(req, 'vital_session');
           const hadSessionCookie = Boolean(sessionToken);
@@ -3070,7 +3111,9 @@ export function startConsoleServer(
             // Identical for both surfaces by choice: legacy HTML pages answered a
             // foreign tenant with JSON as well, and the tenant mismatch means the
             // caller's session does not belong to this deployment at all.
-            if (auth && auth.user.tenant !== tenant) return json(res, 403, { ok: false, error: 'wrong tenant' });
+            // In subdomain mode the Host header selects the org, so the check
+            // is against the request tenant, not the bound central slug.
+            if (auth && auth.user.tenant !== requestTenant) return json(res, 403, { ok: false, error: 'wrong tenant' });
             // Session freshness precedes the role decision, matching the legacy
             // order: an un-activated account is sent to change its password rather
             // than told about a page it cannot see yet. Declared per route, so the
@@ -4325,7 +4368,33 @@ export function startConsoleServer(
             const scope = decodeURIComponent(buzzRoom[1]!);
             const surface = await maybeBuzzSurface(db, tenant);
             const notice = url.searchParams.get('notice') ?? undefined;
-            const body = await renderBuzzRoom(
+            const roomUrl = `/console/buzz/${encodeURIComponent(scope)}`;
+
+            // `?panel=` asks for the record context region alone. The shell's
+            // swap script fetches it whenever a reference link is clicked, so a
+            // click that only changes the panel costs two reads — the room and
+            // its thread — instead of the whole page's twenty.
+            if (url.searchParams.has(PANEL_FRAGMENT_PARAM)) {
+              const asked = url.searchParams.get(PANEL_FRAGMENT_PARAM);
+              const panel = await renderBuzzRoomContext(db, tenant, scope, surface, {
+                roomUrl,
+                // The viewer's department: the record context panel shows issue
+                // context only to the team the Issues board admits.
+                viewerTeam: auth.user.team,
+                // A malformed or withheld selection is no selection: the region
+                // falls back to the room's references rather than to nothing.
+                open: !asked || asked === PANEL_DIGEST ? null : parseRecordRef(asked),
+              });
+              if (!panel) return json(res, 404, { ok: false, error: 'no such room' });
+              res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+              res.end(panel);
+              return;
+            }
+
+            // `?open=` is the region's selection, and it is part of the room's
+            // address, so a shared link lands on the record it names even with
+            // no script at all.
+            const view = await renderBuzzRoom(
               db,
               tenant,
               scope,
@@ -4335,8 +4404,12 @@ export function startConsoleServer(
               notice ?? undefined,
               auth.user.id,
               coord,
+              // The viewer's department: the record context panel shows issue
+              // context only to the team the Issues board admits.
+              auth.user.team,
+              parseRecordRef(url.searchParams.get(PANEL_OPEN_PARAM)),
             );
-            if (!body) {
+            if (!view) {
               res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
               res.end(
                 detailDocument(
@@ -4348,7 +4421,20 @@ export function startConsoleServer(
               return;
             }
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(await wrapInWorkspaceShell(buzzDocument(`#${scope}`, body), db, tenant, home, auth, 'buzz', scope));
+            res.end(
+              await wrapInWorkspaceShell(
+                buzzDocument(`#${scope}`, view.body),
+                db,
+                tenant,
+                home,
+                auth,
+                'buzz',
+                scope,
+                undefined,
+                undefined,
+                view.contextPanel,
+              ),
+            );
             return;
           }
           const buzzRoomCommand = path.match(/^\/console\/buzz\/([^/]+)\/command$/);
@@ -4661,7 +4747,7 @@ export function startConsoleServer(
             const meetingId = decodeURIComponent(roomMatch[1]!);
             const meeting = await meetingService.getMeeting(tenant, meetingId);
             if (!meeting) {
-              res.writeHead(302, { location: `${home}console/meetings` });
+              res.writeHead(302, { location: '/console/meetings' });
               res.end();
               return;
             }
@@ -4714,7 +4800,7 @@ export function startConsoleServer(
             const meetingId = decodeURIComponent(detailMatch[1]!);
             const details = await meetingService.getMeetingDetails(tenant, meetingId);
             if (!details) {
-              res.writeHead(302, { location: `${home}console/meetings` });
+              res.writeHead(302, { location: '/console/meetings' });
               res.end();
               return;
             }
@@ -4782,7 +4868,7 @@ export function startConsoleServer(
             await auditConsole(db, tenant, by(auth.user), 'meeting.create', `meeting:${meeting.id}`, at, meeting.title);
 
             if (ctype.includes('application/x-www-form-urlencoded')) {
-              res.writeHead(303, { location: `${home}console/meetings/${encodeURIComponent(meeting.id)}/room` });
+              res.writeHead(303, { location: `/console/meetings/${encodeURIComponent(meeting.id)}/room` });
               res.end();
               return;
             }

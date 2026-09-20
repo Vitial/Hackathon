@@ -6,6 +6,7 @@
 // shows "n/a", and there are no invented contacts or personas.
 
 import { getScopeAvatarSrc } from './buzz.ts';
+import { BUZZ_CONTEXT_STYLE } from './buzz-context.ts';
 import { svgIcon } from './buzz-icons.ts';
 import { parseTeam } from '../core/auth.ts';
 import { isCanonicalScope } from '../talk/rooms.ts';
@@ -59,8 +60,18 @@ export function renderWorkspaceShell(opts: {
   metrics: ShellMetrics | null;
   /** Real per-room recency (minutes) keyed by scope; missing rooms render "n/a". */
   roomRecency: Record<string, number | null>;
+  /**
+   * The record context region, when the surface has one. It is a shell column,
+   * not part of the page it sits beside: the surface that knows what its content
+   * references builds it (`buzz-context.ts`), and the shell owns where it sits,
+   * how it collapses, and the swap when a link is clicked. Omitted entirely on a
+   * surface with nothing to put in it — and then its stylesheet is not emitted
+   * either.
+   */
+  contextPanel?: string | null;
 }): string {
   const { rooms, activeScope, home: _home, consoleNav, accountCluster, innerHtml, userEmail, userRole, tenant } = opts;
+  const contextPanel = opts.contextPanel ?? '';
 
   // Identity comes from the session only. No invented persona: if a caller
   // cannot say who is viewing, the chrome says so instead of rendering
@@ -268,6 +279,7 @@ export function renderWorkspaceShell(opts: {
     width: 100vw;
     background: var(--buzz-canvas);
     overflow: hidden;
+    position: relative;
   }
 
   /* Left Sidebar */
@@ -588,13 +600,42 @@ export function renderWorkspaceShell(opts: {
     position: relative;
   }
 
+  /* The record context region: a third card beside the conversation, on any
+     Buzz surface that has one. Same floating treatment as the content card, one
+     rank quieter. Widths below 1180px keep the conversation whole and float an
+     *opened* record over it — the room's digest is a convenience, not the thing
+     being read, and hiding the digest must never cost the composer. */
+  .buzz-window--context .buzz-content-card { margin-right: 0; }
+  .buzz-context {
+    flex: 0 0 292px;
+    margin: 8px 12px 12px 8px;
+    border: 1px solid var(--buzz-border);
+    border-radius: 14px;
+    box-shadow: var(--buzz-shadow-card);
+  }
+  @media (max-width: 1180px) {
+    .buzz-window--context .buzz-content-card { margin-right: 12px; }
+    .buzz-context {
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 40;
+      width: min(360px, 90vw);
+      margin: 0;
+      box-shadow: var(--buzz-shadow-pop);
+    }
+    .buzz-context[data-open="0"] { display: none; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
     .buzz-launcher:hover { transform: none; }
   }
 </style>
 
-<div class="buzz-window">
+${contextPanel ? BUZZ_CONTEXT_STYLE : ''}
+<div class="buzz-window${contextPanel ? ' buzz-window--context' : ''}">
   <!-- Left Buzz Sidebar (Warm Sage Desktop Theme) -->
   <aside class="buzz-sidebar" id="buzz-workspace-sidebar">
     <!-- Search Box -->
@@ -699,6 +740,9 @@ export function renderWorkspaceShell(opts: {
   <main id="main" class="buzz-content-card">
     ${innerHtml}
   </main>
+
+  <!-- Record context region (shell-owned; see contextPanel above) -->
+  ${contextPanel}
 </div>
 <script>
 (function () {
@@ -720,6 +764,80 @@ export function renderWorkspaceShell(opts: {
   }
   for (var j = 0; j < btns.length; j++) { btns[j].addEventListener('click', toggle); }
   paint();
+})();
+</script>
+<script>
+/**
+ * The record context region's one behaviour: a reference opens in the panel
+ * beside the conversation instead of taking the page away from it, and closing
+ * puts the room's references back. Both controls are real URLs — the region's
+ * data-buzz-room attribute is the room, ?panel= is this region alone, ?open= is
+ * the selection — so with this script gone every link still goes somewhere
+ * real, and a failed swap falls back to following the link rather than
+ * leaving a dead click.
+ */
+(function () {
+  var current = document.querySelector('[data-buzz-context]');
+  if (!current || !window.fetch || !window.history || !window.history.pushState) return;
+  var room = current.getAttribute('data-buzz-room');
+  if (!room) return;
+
+  function targetFromSearch(search) {
+    var m = /[?&]open=([^&]*)/.exec(search || '');
+    if (!m || !m[1]) return 'digest';
+    try { return decodeURIComponent(m[1]); } catch (e) { return 'digest'; }
+  }
+
+  function load(target, mode, fallbackHref) {
+    if (current.getAttribute('aria-busy') === 'true') return;
+    current.setAttribute('aria-busy', 'true');
+    fetch(room + '?panel=' + encodeURIComponent(target), {
+      credentials: 'same-origin',
+      headers: { accept: 'text/html' }
+    })
+      .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+      .then(function (html) {
+        var holder = document.createElement('div');
+        holder.innerHTML = html;
+        var next = holder.querySelector('[data-buzz-context]');
+        if (!next) throw new Error('no panel in the response');
+        current.replaceWith(next);
+        current = next;
+        if (mode === 'push' || mode === 'replace') {
+          var url = target === 'digest' ? room : room + '?open=' + encodeURIComponent(target);
+          if (mode === 'push') window.history.pushState({ buzzPanel: target }, '', url);
+          else window.history.replaceState({ buzzPanel: target }, '', url);
+        }
+      })
+      .catch(function () {
+        current.removeAttribute('aria-busy');
+        if (fallbackHref) window.location.href = fallbackHref;
+        else window.location.reload();
+      });
+  }
+
+  document.addEventListener('click', function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var trigger = e.target && e.target.closest ? e.target.closest('[data-buzz-panel-open]') : null;
+    if (trigger) {
+      e.preventDefault();
+      e.stopPropagation();
+      load(trigger.getAttribute('data-buzz-panel-open') || 'digest', 'push', trigger.href);
+      return;
+    }
+    var close = e.target && e.target.closest ? e.target.closest('[data-buzz-panel-close]') : null;
+    if (close) {
+      e.preventDefault();
+      e.stopPropagation();
+      load('digest', 'push', close.href);
+    }
+  });
+
+  // Back and forward move between panel states, so refetch the region the
+  // address bar now names instead of reloading the room around it.
+  window.addEventListener('popstate', function () {
+    load(targetFromSearch(window.location.search), 'none', null);
+  });
 })();
 </script>`;
 }

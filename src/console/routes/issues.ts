@@ -26,6 +26,18 @@ import { requireAuth, type AuthContext, type Capability, type RouteDef } from '.
 import type { AsyncDb } from '../../core/db.ts';
 import { isEngineer, listUsers } from '../../core/auth.ts';
 import {
+  FRAGMENT_PARAM,
+  INSPECT_PARAM,
+  hrefWithoutInspect,
+  inspectHref,
+  issuePanel,
+  parseInspect,
+  renderInspectLayout,
+  renderInspectorPanel,
+  unavailablePanel,
+  type InspectTarget,
+} from '../inspector.ts';
+import {
   ISSUE_PRIORITIES,
   ISSUE_STATES,
   addComment,
@@ -41,6 +53,7 @@ import {
   pushCreateToGitHub,
   pushDeleteToGitHub,
   pushUpdateToGitHub,
+  formatIssueKey,
   renderIssuesBoard,
   syncIssues,
   updateIssue,
@@ -128,14 +141,62 @@ export function issuesRoutes(): RouteDef<IssuesEnv>[] {
       async handler(ctx) {
         const auth = requireAuth(ctx);
         const { db, tenant } = ctx.env;
+        const home = ctx.env.home;
         const snapshot = await listIssues(db, tenant);
-        const body = renderIssuesBoard(snapshot, {
-          csrf: auth.session.csrfToken,
-          home: ctx.env.home,
-          engineers: await engineerList(db, tenant),
-          currentEmail: auth.user.email,
-          syncConfig: await getGitHubSyncConfig(db, tenant),
-          pushError: await getGitHubPushError(db, tenant),
+        // The board's list view is its table surface, so a row opens the shared
+        // inspector beside it. The panel reads only the snapshot this page
+        // already loaded, so a selection costs the board no new statements.
+        const inspectTarget = parseInspect(ctx.url.searchParams.get(INSPECT_PARAM));
+        const closeHref = hrefWithoutInspect(ctx.path, ctx.url.search || '');
+        const boardHref = (id: string) => `/console/issues?view=board&inspect=${encodeURIComponent(`issue:${id}`)}`;
+        const panelFor = (target: InspectTarget) => {
+          const issue = snapshot.issues.find((i) => i.id === target.id);
+          if (!issue) return unavailablePanel(target, 'This issue is not on the board this response read.');
+          return issuePanel(
+            {
+              id: issue.id,
+              key: formatIssueKey(issue),
+              title: issue.title,
+              state: issue.state,
+              priority: issue.priority,
+              labels: issue.labels ?? [],
+              assigneeEmail: issue.assigneeEmail,
+              comments: snapshot.comments.filter((c) => c.issueId === issue.id).length,
+              createdAt: issue.createdAt,
+              updatedAt: issue.updatedAt,
+            },
+            { at: ctx.at, editHref: boardHref(issue.id) },
+          );
+        };
+        if (ctx.url.searchParams.get(FRAGMENT_PARAM) === '1') {
+          // A fragment with no selection is a caller error, not a page: the
+          // script only asks for one when it has a target, and inventing a
+          // panel for an unnamed record would be worse than a 400.
+          if (!inspectTarget) {
+            ctx.res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE });
+            ctx.res.end('fragment=1 requires an inspect=<kind>:<id> target');
+            return;
+          }
+          // The board polls its own delta feed on this path; a fragment is never
+          // JSON, so the two never contend for a request.
+          ctx.res.writeHead(200, { 'content-type': HTML, ...NO_STORE });
+          ctx.res.end(renderInspectorPanel(panelFor(inspectTarget)));
+          return;
+        }
+        const body = renderInspectLayout({
+          inner: renderIssuesBoard(snapshot, {
+            csrf: auth.session.csrfToken,
+            home,
+            engineers: await engineerList(db, tenant),
+            currentEmail: auth.user.email,
+            syncConfig: await getGitHubSyncConfig(db, tenant),
+            pushError: await getGitHubPushError(db, tenant),
+            inspectHrefFor: (id) => inspectHref(ctx.path, ctx.url.search || '', { kind: 'issue', id }),
+            view: ctx.url.searchParams.get('view') === 'list' ? 'list' : 'board',
+          }),
+          panel: inspectTarget ? panelFor(inspectTarget) : null,
+          closeHref,
+          label: 'Issue context',
         });
         sendHtml(ctx.res, await ctx.env.shellPage(auth, { title: 'Issues', navKey: 'issues', hideHeader: true, body }));
       },

@@ -36,6 +36,10 @@ import {
   confirmPasswordReset,
   tryPasswordReset,
   tenantAccessState,
+  RESERVED_SLUGS,
+  isReservedSlug,
+  normalizeHost,
+  resolveTenantFromHost,
   operatorSetPassword,
   hashPassword,
   verifyPassword,
@@ -129,6 +133,40 @@ T('signup creates a tenant and its owner in one transaction', async () => {
   const actions = audits.map((r) => String((r as { action: string }).action));
   eq(actions.includes('auth.tenant_created'), true, 'tenant creation audited:');
   eq(actions.includes('auth.user_created'), true, 'owner creation audited:');
+});
+
+T('the Host header selects an org only where the rules agree with registration', () => {
+  // Subdomain mode: the Host header decides which tenant a request belongs to.
+  // That decision must read the *same* reserved-slug list registration enforces
+  // — a host we refuse to register can never become a tenant, so resolving a
+  // request to it would route to an org that does not exist.
+  eq(resolveTenantFromHost('globex.example.com', 'example.com', TEN), 'globex', 'a subdomain selects the org:');
+  eq(resolveTenantFromHost('GLOBEX.Example.COM:3100', 'example.com', TEN), 'globex', 'case and port do not matter:');
+  eq(resolveTenantFromHost('globex.example.com.', 'example.com', TEN), 'globex', 'nor does a trailing dot:');
+
+  // The central surface keeps the bound tenant, on every spelling of it.
+  eq(resolveTenantFromHost('example.com', 'example.com', TEN), TEN);
+  eq(resolveTenantFromHost('www.example.com', 'example.com', TEN), TEN);
+  eq(normalizeHost('WWW.Example.com:443'), 'www.example.com', 'hosts normalize before they are compared:');
+
+  // Reserved subdomains never select a tenant, and the two lists agree.
+  for (const reserved of RESERVED_SLUGS) {
+    eq(resolveTenantFromHost(`${reserved}.example.com`, 'example.com', TEN), TEN, `reserved "${reserved}" falls back:`);
+  }
+  eq(isReservedSlug('Stripe'), true);
+  eq(isReservedSlug('globex'), false);
+
+  // Not a subdomain of this base at all: another host, a deeper name, a slug
+  // that could not be registered, or no host to read.
+  eq(resolveTenantFromHost('example.com.evil.test', 'example.com', TEN), TEN);
+  eq(resolveTenantFromHost('a.b.example.com', 'example.com', TEN), TEN);
+  eq(resolveTenantFromHost('x.example.com', 'example.com', TEN), TEN, 'a one-character slug is not a slug:');
+  eq(resolveTenantFromHost('', 'example.com', TEN), TEN);
+  eq(resolveTenantFromHost(undefined, 'example.com', TEN), TEN);
+
+  // No base domain is legacy single-tenant mode: there is nothing to resolve.
+  eq(resolveTenantFromHost('globex.example.com', null, TEN), TEN);
+  eq(resolveTenantFromHost('globex.example.com', '', TEN), TEN);
 });
 
 T('signup validates and refuses duplicate tenants and malformed input', async () => {

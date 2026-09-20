@@ -5,8 +5,17 @@ import { RoomBudgetTracker, type BudgetGasGauge } from '../talk/budget-gauge.ts'
 import { roomHealth } from './shell-reads.ts';
 import type { BuzzSurface } from '../talk/buzz.ts';
 import type { Coordinator } from '../coord/coordinator.ts';
-import { listUsers } from '../core/auth.ts';
+import { listUsers, parseTeam } from '../core/auth.ts';
 import { svgIcon } from './buzz-icons.ts';
+import {
+  loadBuzzContext,
+  recordRefFromHref,
+  recordRefsFromThread,
+  refKey,
+  renderBuzzContextPanel,
+  type BuzzMessageLike,
+  type BuzzRecordRef,
+} from './buzz-context.ts';
 
 /**
  * The Workspace (internal: buzz) — the human-facing chat console.
@@ -545,6 +554,107 @@ export function renderBuzzRoster(data: BuzzRosterData, _home: string, _csrf: str
 </section>`;
 }
 
+/**
+ * Record links inside a message open the panel instead of leaving the room.
+ * The anchor keeps the Console href it already had, so with JavaScript off the
+ * link still goes exactly where it went before; the shell upgrades the click.
+ */
+function panelLinks(html: string): string {
+  return html.replace(/<a href="([^"]+)"/g, (whole: string, href: string) => {
+    const ref = recordRefFromHref(href);
+    return ref ? `${whole} data-buzz-panel-open="${esc(refKey(ref))}"` : whole;
+  });
+}
+
+/** The name a room is shown under: `#infra` and engineering are one room. */
+function roomContextPanelName(scope: string, rawScope: string, defName: string): string {
+  return scope === 'infra' || rawScope === 'engineering' ? 'engineering' : defName;
+}
+
+interface RoomContextPanelInput {
+  messages: readonly BuzzMessageLike[];
+  /** The room's address: the base of every open link and of the swap's refetch. */
+  roomUrl: string;
+  scopeLabel: string;
+  at?: string;
+  canReadIssues: boolean;
+  /** The reference `?open=` selected, or null for the room's digest. */
+  open: BuzzRecordRef | null;
+}
+
+/**
+ * The shell's record context region for a room, from a thread that is already
+ * loaded. The reads are issued only for what the conversation actually
+ * references, so a room that links to nothing pays no statement for a panel it
+ * has nothing to put in — and a selection that is already among those
+ * references costs one more statement for nothing.
+ */
+async function roomContextPanel(db: AsyncDb, tenant: string, input: RoomContextPanelInput): Promise<string> {
+  const at = input.at ?? new Date().toISOString();
+  const { refs, withheld } = recordRefsFromThread(input.messages);
+  const entries = refs.length
+    ? await loadBuzzContext(db, tenant, refs, { roomUrl: input.roomUrl, at, canReadIssues: input.canReadIssues })
+    : [];
+
+  // The selection is normally one of the room's own references, so it is read
+  // already. One the cap left out — or a deep link to a record this room never
+  // linked — is read on its own, one statement, and only then.
+  const selected = input.open ? refKey(input.open) : null;
+  let open = selected ? (entries.find((e) => refKey(e) === selected) ?? null) : null;
+  if (selected && !open) {
+    const extra = await loadBuzzContext(db, tenant, [input.open!], {
+      roomUrl: input.roomUrl,
+      at,
+      canReadIssues: input.canReadIssues,
+    });
+    open = extra[0] ?? null;
+  }
+
+  // No stylesheet: the shell emits it once for the document, and the fragments
+  // the swap script fetches are injected into a document that has it.
+  return renderBuzzContextPanel(entries, {
+    scope: input.scopeLabel,
+    roomUrl: input.roomUrl,
+    withheld,
+    at,
+    open,
+    includeStyle: false,
+  });
+}
+
+/** A room page: its body, plus the context region the shell renders beside it. */
+export interface BuzzRoomView {
+  /** The room itself: header, stream, composer. The panel is not part of it. */
+  body: string;
+  /** The shell's record context region for this room. */
+  contextPanel: string;
+}
+
+/**
+ * The context region alone — `?panel=`. A click that only changes the panel
+ * costs two reads (the room, its thread) instead of the whole page's twenty.
+ */
+export async function renderBuzzRoomContext(
+  db: AsyncDb,
+  tenant: string,
+  rawScope: string,
+  surface: BuzzSurface | null | undefined,
+  opts: { roomUrl: string; at?: string; viewerTeam?: string; open: BuzzRecordRef | null },
+): Promise<string | null> {
+  const scope = normalizeScope(rawScope);
+  const def = await resolveRoomDef(db, tenant, scope);
+  if (!def) return null;
+  const thread = await loadRoomThread(db, tenant, scope, surface);
+  return roomContextPanel(db, tenant, {
+    messages: thread.messages,
+    roomUrl: opts.roomUrl,
+    scopeLabel: roomContextPanelName(scope, rawScope, def.name),
+    at: opts.at,
+    canReadIssues: parseTeam(opts.viewerTeam) === 'engineering',
+    open: opts.open,
+  });
+}
+
 /** One room: thread, pending approvals, gauge, canvas, command box. */
 export async function renderBuzzRoom(
   db: AsyncDb,
@@ -556,7 +666,11 @@ export async function renderBuzzRoom(
   notice?: string,
   currentUserId?: string,
   coord?: Coordinator,
-): Promise<string | null> {
+  /** The viewer's department. Gates the Issues half of the context panel. */
+  viewerTeam?: string,
+  /** `?open=` — the reference the context region is opened on, if any. */
+  openRef?: BuzzRecordRef | null,
+): Promise<BuzzRoomView | null> {
   const scope = normalizeScope(rawScope);
   // Canonical rooms resolve from the builtin list; user-made rooms (created
   // via /setup/rooms) resolve from stored custom records. An unknown scope
@@ -768,8 +882,8 @@ export async function renderBuzzRoom(
         : ``;
 
       const bubble = isCard
-        ? `<div style="border-left:3px solid var(--buzz-warn);background:var(--buzz-warn-soft);border-radius:0 8px 8px 0;padding:10px 12px;"><div class="buzz-md" style="font-size:13.5px;line-height:1.45;color:var(--buzz-ink-1);">${renderMarkdownLite(m.content.slice(0, 4000))}</div></div>`
-        : `<div class="buzz-md" style="font-size:13.5px;line-height:1.45;color:var(--buzz-ink-1);overflow-wrap:anywhere;">${renderMarkdownLite(m.content.slice(0, 4000))}</div>${doneArrow}`;
+        ? `<div style="border-left:3px solid var(--buzz-warn);background:var(--buzz-warn-soft);border-radius:0 8px 8px 0;padding:10px 12px;"><div class="buzz-md" style="font-size:13.5px;line-height:1.45;color:var(--buzz-ink-1);">${panelLinks(renderMarkdownLite(m.content.slice(0, 4000)))}</div></div>`
+        : `<div class="buzz-md" style="font-size:13.5px;line-height:1.45;color:var(--buzz-ink-1);overflow-wrap:anywhere;">${panelLinks(renderMarkdownLite(m.content.slice(0, 4000)))}</div>${doneArrow}`;
 
       const replies = byRoot.get(m.id) ?? [];
       const replyThreadHtml =
@@ -786,7 +900,7 @@ export async function renderBuzzRoom(
           const rw = displayName(r.author, config.agentName);
           return `<div style="display:flex;gap:8px;padding:4px 0;">
         ${getMascotAvatar(rw, 26)}
-        <div style="flex:1;"><span style="font-weight:600;font-size:12.5px;">${esc(rw)}</span> <span style="font-size:11px;color:var(--buzz-ink-3);">${esc(fmtClock(r.createdAt))}</span><div class="buzz-md" style="font-size:12.5px;margin-top:2px;">${renderMarkdownLite(r.content.slice(0, 4000))}</div></div>
+        <div style="flex:1;"><span style="font-weight:600;font-size:12.5px;">${esc(rw)}</span> <span style="font-size:11px;color:var(--buzz-ink-3);">${esc(fmtClock(r.createdAt))}</span><div class="buzz-md" style="font-size:12.5px;margin-top:2px;">${panelLinks(renderMarkdownLite(r.content.slice(0, 4000)))}</div></div>
       </div>`;
         })
         .join('')}
@@ -859,7 +973,21 @@ export async function renderBuzzRoom(
       <div class="buzz-welcome__grid">${welcomeChipHtml}</div>
     </li>`;
 
-  const roomDisplayName = scope === 'infra' || rawScope === 'engineering' ? 'engineering' : def.name;
+  const roomDisplayName = roomContextPanelName(scope, rawScope, def.name);
+
+  // The record context region belongs to the Buzz shell — it sits beside the
+  // conversation on every theme, and the shell swaps it in place when a link is
+  // clicked — but only this room knows what its own conversation references, so
+  // the room builds the region and hands it up. See `BuzzRoomView`.
+  const roomUrl = `/console/buzz/${encodeURIComponent(scope)}`;
+  const contextPanel = await roomContextPanel(db, tenant, {
+    messages: thread.messages,
+    roomUrl,
+    scopeLabel: roomDisplayName,
+    // The same gate the Issues board uses: department, never role.
+    canReadIssues: parseTeam(viewerTeam) === 'engineering',
+    open: openRef ?? null,
+  });
 
   // Budget bar fill tone (real gauge, no invented numbers).
   let budgetFillClass = '';
@@ -867,7 +995,7 @@ export async function renderBuzzRoom(
   else if (gauge.isWarning) budgetFillClass = ' buzz-budget__fill--warn';
   const budgetFillPct = Math.max(0, Math.min(100, gauge.percentage));
 
-  return `
+  const body = `
 <style>
   .buzz-message-row:hover {
     background: var(--buzz-inset);
@@ -1095,7 +1223,8 @@ export async function renderBuzzRoom(
   }
 </style>
 
-<div style="display:flex;flex-direction:column;height:100%;min-height:0;background:var(--buzz-surface);overflow:hidden;position:relative;">
+<div class="buzz-room-layout" style="display:flex;height:100%;min-height:0;background:var(--buzz-surface);overflow:hidden;position:relative;">
+ <div style="display:flex;flex-direction:column;flex:1;min-width:0;height:100%;min-height:0;">
   <!-- Room Header -->
   <header class="buzz-header">
     <div class="buzz-header__id">
@@ -1227,5 +1356,7 @@ export async function renderBuzzRoom(
     if (drawer) drawer.style.display = 'none';
   };
   </script>
+ </div>
 </div>`;
+  return { body, contextPanel };
 }

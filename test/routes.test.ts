@@ -17,6 +17,9 @@ import { observabilityRoutes, OBSERVABILITY_CAPABILITIES } from '../src/console/
 import { complianceRoutes, COMPLIANCE_CAPABILITIES } from '../src/console/routes/compliance.ts';
 import { requestsRoutes, REQUESTS_CAPABILITIES } from '../src/console/routes/requests.ts';
 import { listsRoutes, LISTS_CAPABILITIES } from '../src/console/routes/lists.ts';
+// The feed domain's own declaration test lives in test/feed.test.ts; this file
+// only needs its capability map to keep the budget table honest.
+import { FEED_CAPABILITIES } from '../src/console/routes/feed.ts';
 import { learningRoutes, LEARNING_CAPABILITIES } from '../src/console/routes/learning.ts';
 import { agentTasksRoutes, AGENT_TASKS_CAPABILITIES } from '../src/console/routes/agent-tasks.ts';
 import { reviewRoutes, REVIEW_CAPABILITIES } from '../src/console/routes/review.ts';
@@ -543,12 +546,15 @@ T('one page view evaluates the room set once, not once per consumer', async () =
     await res.text();
 
     const repeated = [...counted.byKey().entries()].filter(([, n]) => n > 1);
-    // Exactly one read legitimately repeats in a shelled page: the session's own
-    // user row, fetched once to authenticate and once by the page context. Any
-    // *other* repeat means a read was asked for twice within one render.
+    // Nothing repeats, and that is the assertion, not a gap in it. This used to
+    // allow exactly one exception — the session's own user row, fetched once to
+    // authenticate and once by the page context — and the identity read now
+    // carries the org's status in the same statement, so the exception is gone
+    // and the allow-list is empty. Any repeat here means a read was asked for
+    // twice within one render.
     eq(
       repeated.map(([id]) => id.split(' | ')[0]),
-      ['SELECT * FROM users WHERE id = ?'],
+      [],
       'no read is issued twice within a page view:',
     );
     // And the room set itself is enumerated once, not once per room and not once
@@ -1084,6 +1090,26 @@ const PAGE_SQL_BUDGETS: readonly PageBudget[] = [
     },
   },
   {
+    // The Feed is the cheapest page in this table on purpose: one pass over the
+    // tenant's request rows and one filtered page of claims, whatever the
+    // tenant's size. It reads what the queue reads and writes nothing.
+    url: '/console/inbox',
+    pattern: '/console/inbox',
+    dispatch: 'table',
+    total: 17,
+    modules: {
+      'core/auth': 4,
+      'talk/health': 4,
+      'console/shell-metrics': 4,
+      // The page's own reads: one filtered claim page (count + rows). The
+      // request pass is the same `coord.list` the queue already paid for, so
+      // the feed adds no request-side cost at all.
+      'console/report': 2,
+      'talk/rooms': 2,
+      'gov/trust': 1,
+    },
+  },
+  {
     url: '/console/human-work',
     pattern: '/console/human-work',
     dispatch: 'table',
@@ -1191,6 +1217,7 @@ T('every budgeted page is attributed to the mechanism that really serves it', ()
     ...Object.keys(COMPLIANCE_CAPABILITIES),
     ...Object.keys(REQUESTS_CAPABILITIES),
     ...Object.keys(LISTS_CAPABILITIES),
+    ...Object.keys(FEED_CAPABILITIES),
     ...Object.keys(REVIEW_CAPABILITIES),
     ...Object.keys(ISSUES_CAPABILITIES),
   ]);

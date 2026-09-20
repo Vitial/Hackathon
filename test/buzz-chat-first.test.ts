@@ -542,7 +542,7 @@ T('surface split: the chat carries no Console tokens; the Console does', async (
     eq(chat.includes('--v-bg-0:'), false, 'chat carries no Console token definitions:');
     eq(chat.includes('data-theme='), false, 'chat is not given a Console theme attribute:');
     eq(chat.includes('data-vital-no-theme'), true, 'chat opts out of the token injection:');
-    eq(chat.includes('class="buzz-window"'), true, 'chat renders the Buzz shell:');
+    eq(chat.includes('class="buzz-window'), true, 'chat renders the Buzz shell:');
     eq(
       chat.includes('-apple-system, BlinkMacSystemFont'),
       true,

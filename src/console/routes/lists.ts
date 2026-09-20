@@ -47,7 +47,21 @@ import {
   searchClaims,
   searchRequests,
 } from '../report.ts';
-import { renderReview } from '../review.ts';
+import { awaitingHumanReview, renderReview } from '../review.ts';
+import {
+  FRAGMENT_PARAM,
+  INSPECT_PARAM,
+  buzzHrefFor,
+  hrefWithoutInspect,
+  inspectHref,
+  inspectTable,
+  parseInspect,
+  renderInspectLayout,
+  renderInspectorPanel,
+  requestPanel,
+  unavailablePanel,
+  type InspectTarget,
+} from '../inspector.ts';
 import { roomHealth } from '../shell-reads.ts';
 import { ROOM_CATEGORIES, ROOM_CATEGORY_LABELS } from '../../talk/rooms.ts';
 
@@ -118,7 +132,13 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
         const auth = requireAuth(ctx);
         const { db, tenant } = ctx.env;
         const state = decodeListState(ctx.url.search);
-        const here = hereOf(ctx);
+        // The shared inspector (inspector.ts). The rows here are request
+        // *summaries*, so the panel shows what they carry — state, scope, ages,
+        // workflow — and links out for the rest. It never re-reads a record to
+        // fill a panel, which is why this page's statement budget is unchanged.
+        const inspectTarget = parseInspect(ctx.url.searchParams.get(INSPECT_PARAM));
+        const closeHref = hrefWithoutInspect(ctx.path, ctx.url.search || '');
+        const inspectLinkFor = (target: InspectTarget): string => inspectHref(ctx.path, ctx.url.search || '', target);
         try {
           const pageResult = await searchRequests(db, tenant, {
             q: state.q,
@@ -132,16 +152,44 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
             offset: state.offset,
           });
           const groups = partitionRequestsByDecision(pageResult.rows);
-          const row = (r: { id: string; goal: string; state: string }): string[] => [
-            `<a class="v-strong" href="${esc(withReturnTo(requestDetailUrl(r.id), here))}">${esc(r.goal)}</a>`,
-            `<span class="v-mono v-meta">${esc(r.id)}</span>`,
-            statusChip(r.state),
-          ];
-          const REQUEST_COLUMNS = ['Request', 'ID', 'State'];
+          const panelFor = (target: InspectTarget, at: string) => {
+            const r = pageResult.rows.find((x) => x.id === target.id);
+            if (!r)
+              return unavailablePanel(
+                target,
+                'This request is not among the rows this page read — it may be older than a page, or outside the current filter.',
+              );
+            return requestPanel(r, {
+              at,
+              recordHref: withReturnTo(requestDetailUrl(r.id), closeHref),
+              buzzHref: buzzHrefFor(r.targetScope || r.originScope),
+            });
+          };
+          if (ctx.url.searchParams.get(FRAGMENT_PARAM) === '1') {
+            // A fragment with no selection is a caller error, not a page: the
+            // script only asks for one when it has a target.
+            if (!inspectTarget) {
+              ctx.res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE });
+              ctx.res.end('fragment=1 requires an inspect=<kind>:<id> target');
+              return;
+            }
+            ctx.res.writeHead(200, { 'content-type': HTML, ...NO_STORE });
+            ctx.res.end(renderInspectorPanel(panelFor(inspectTarget, ctx.at)));
+            return;
+          }
+          const row = (r: { id: string; goal: string; state: string }) => ({
+            target: { kind: 'request' as const, id: r.id },
+            title: r.goal,
+            sub: r.id,
+            cells: [statusChip(r.state)],
+          });
           const group = (heading: string, rows2: { id: string; goal: string; state: string }[]): string =>
             rows2.length === 0
               ? ''
-              : renderListSection(`${heading} (${rows2.length})`, renderTable(REQUEST_COLUMNS, rows2.map(row)));
+              : renderListSection(
+                  `${heading} (${rows2.length})`,
+                  inspectTable(['Request', 'State'], rows2.map(row), inspectLinkFor),
+                );
           let body = '';
           if (pageResult.total === 0) {
             const model = noResultsModel('/console/requests', state);
@@ -170,18 +218,23 @@ export function listsRoutes(): RouteDef<ListsEnv>[] {
               navKey: 'requests',
               hideHeader: true,
               drawer: ctx.url.searchParams.get('drawer') === '1',
-              body: renderListPage({
-                title: 'Requests',
-                heading: 'Requests',
-                searchAction: '/console/requests',
-                query: state.q ?? '',
-                total: pageResult.total,
-                truncated: pageResult.truncated,
-                shown: pageResult.rows.length,
-                prevUrl: prev,
-                nextUrl: next,
-                clearUrl: clearFilterUrl('/console/requests'),
-                body,
+              body: renderInspectLayout({
+                inner: renderListPage({
+                  title: 'Requests',
+                  heading: 'Requests',
+                  searchAction: '/console/requests',
+                  query: state.q ?? '',
+                  total: pageResult.total,
+                  truncated: pageResult.truncated,
+                  shown: pageResult.rows.length,
+                  prevUrl: prev,
+                  nextUrl: next,
+                  clearUrl: clearFilterUrl('/console/requests'),
+                  body,
+                }),
+                panel: inspectTarget ? panelFor(inspectTarget, ctx.at) : null,
+                closeHref,
+                label: 'Request context',
               }),
             }),
           );
@@ -390,7 +443,9 @@ ${renderTable(['Room', 'Scope', 'Status', 'Pending', 'Stops', 'Budget used'], in
         const auth = requireAuth(ctx);
         const { tenant } = ctx.env;
         const state = decodeListState(ctx.url.search);
-        const here = hereOf(ctx);
+        // No `here`: the rows open the inspector instead of the record, and the
+        // panel carries the record link with this page (selection removed) as
+        // its return target.
         const limit =
           state.limit !== undefined && Number.isSafeInteger(state.limit) && state.limit > 0
             ? Math.min(state.limit, 100)
@@ -399,40 +454,117 @@ ${renderTable(['Room', 'Scope', 'Status', 'Pending', 'Stops', 'Budget used'], in
           state.offset !== undefined && Number.isSafeInteger(state.offset) && state.offset >= 0 ? state.offset : 0;
         const q = (state.q ?? '').trim().toLowerCase();
         const all = await ctx.env.coord.list(tenant);
+        // Human work is any REQUEST that bid human minutes. Everything below is
+        // a filter over that one read: the tabs are `awaitingHumanReview` (the
+        // decision queue), the still-open set, and the settled set. No tab
+        // exists without rows behind it, and the counts are the row counts
+        // rather than a stored total (redesign.md §11 Phase 2).
         const terminal = new Set(['COMPLETED', 'DECLINED', 'FAILED', 'EXPIRED', 'TERMINATED_BUDGET', 'DENIED']);
-        let work = all.filter((r) => r.messageClass === 'REQUEST' && r.bid.humanMinutes > 0 && !terminal.has(r.state));
-        if (q) work = work.filter((r) => `${r.goal} ${r.id}`.toLowerCase().includes(q));
-        work.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+        const humanWork = all.filter((r) => r.messageClass === 'REQUEST' && r.bid.humanMinutes > 0);
+        const openWork = humanWork.filter((r) => !terminal.has(r.state));
+        const finishedWork = humanWork.filter((r) => terminal.has(r.state));
+        const pendingDecisions = openWork.filter(awaitingHumanReview).length;
+        const requestedView = ctx.url.searchParams.get('view');
+        const view: 'review' | 'open' | 'completed' =
+          requestedView === 'open' || requestedView === 'completed' ? requestedView : 'review';
+        const scoped = view === 'completed' ? finishedWork : openWork;
+        const matching = q ? scoped.filter((r) => `${r.goal} ${r.id}`.toLowerCase().includes(q)) : [...scoped];
+        const work = matching.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
         const total = work.length;
         const pageWork = work.slice(offset, offset + limit);
-        // The approval queue belongs on this page, not only on the legacy
-        // dashboard chrome. "Human work" is where a person is asked to decide,
-        // and a page that says "Pending human review" without offering Approve
-        // or Decline is a dead end. renderReview already owns the request
-        // approval contract (csrf, requestUpdatedAt optimistic locking, the
-        // explicit `confirmed` checkbox, decline reason, operator fields), so
-        // this reuses it rather than inventing a second approval path.
-        const approvalQueue = await renderReview(ctx.env.coord, ctx.env.ledger, {
-          tenant,
-          actor: ctx.env.actorOf(auth),
-          actorLabel: ctx.env.actorLabel(auth),
-          csrf: auth.session.csrfToken,
-          canApprove: atLeast(auth.user.role, ctx.env.approverMin),
-          requiredRole: ctx.env.approverMin,
-          operatorMode: ctx.env.operatorMode,
-          home: ctx.env.home,
-        });
+        // The tab bar is `v-segmented`, the same control the digest window uses,
+        // and each link preserves the current search so switching tabs never
+        // silently drops a filter.
+        const tabHref = (key: 'review' | 'open' | 'completed'): string => {
+          const params = new URLSearchParams();
+          if (key !== 'review') params.set('view', key);
+          if (state.q) params.set('q', state.q);
+          const query = params.toString();
+          return `/console/human-work${query ? `?${query}` : ''}`;
+        };
+        const tabs: { key: 'review' | 'open' | 'completed'; label: string; count: number }[] = [
+          { key: 'review', label: 'Needs review', count: pendingDecisions },
+          { key: 'open', label: 'Open work', count: openWork.length },
+          { key: 'completed', label: 'Completed', count: finishedWork.length },
+        ];
+        const tabBar = `<nav class="v-segmented" aria-label="Human work view">${tabs
+          .map(
+            (t) =>
+              `<a href="${esc(tabHref(t.key))}"${t.key === view ? ' aria-current="page"' : ''}>${esc(t.label)}${t.count > 0 ? ` <span class="v-mono" style="font-size:11px;">${t.count}</span>` : ''}</a>`,
+          )
+          .join('')}</nav>`;
+        // The shared inspector: selecting a queue card or a row opens that
+        // request's context beside the list. The selection lives in the URL, so
+        // the filters and the tab survive it, and the panel is built from the
+        // rows this page already read.
+        const inspectTarget = parseInspect(ctx.url.searchParams.get(INSPECT_PARAM));
+        const closeHref = hrefWithoutInspect(ctx.path, ctx.url.search || '');
+        const byId = new Map(humanWork.map((r) => [r.id, r]));
+        const requestPanelFor = (target: InspectTarget, at: string) => {
+          const r = byId.get(target.id);
+          if (!r) return unavailablePanel(target, 'This request is not among the rows this page read.');
+          return requestPanel(r, {
+            at,
+            recordHref: withReturnTo(requestDetailUrl(r.id), closeHref),
+            buzzHref:
+              r.targetScope || r.originScope
+                ? `/console/buzz/${encodeURIComponent(r.targetScope || r.originScope)}`
+                : null,
+          });
+        };
+        const inspectLinkFor = (target: InspectTarget): string => inspectHref(ctx.path, ctx.url.search || '', target);
+        if (ctx.url.searchParams.get(FRAGMENT_PARAM) === '1') {
+          // A fragment with no selection is a caller error, not a page.
+          if (!inspectTarget) {
+            ctx.res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE });
+            ctx.res.end('fragment=1 requires an inspect=<kind>:<id> target');
+            return;
+          }
+          ctx.res.writeHead(200, { 'content-type': HTML, ...NO_STORE });
+          ctx.res.end(renderInspectorPanel(requestPanelFor(inspectTarget, ctx.at)));
+          return;
+        }
+        // The approval queue belongs on the tab that owns it, not only on the
+        // legacy dashboard chrome. "Human work" is where a person is asked to
+        // decide, and a page that says "Pending human review" without offering
+        // Approve or Decline is a dead end. renderReview already owns the
+        // request approval contract (csrf, requestUpdatedAt optimistic locking,
+        // the explicit `confirmed` checkbox, decline reason, operator fields),
+        // so this reuses it rather than inventing a second approval path.
+        const approvalQueue =
+          view === 'review'
+            ? await renderReview(ctx.env.coord, ctx.env.ledger, {
+                tenant,
+                actor: ctx.env.actorOf(auth),
+                actorLabel: ctx.env.actorLabel(auth),
+                csrf: auth.session.csrfToken,
+                canApprove: atLeast(auth.user.role, ctx.env.approverMin),
+                requiredRole: ctx.env.approverMin,
+                operatorMode: ctx.env.operatorMode,
+                home: ctx.env.home,
+                inspectHref: (id) => inspectLinkFor({ kind: 'request', id }),
+              })
+            : '';
+        const emptyWhy: Record<typeof view, string> = {
+          review: 'No results: no human work matches this search.',
+          open: 'Nothing is open against a human-minute budget in this view.',
+          completed: 'No human work has settled yet. Completed, declined, failed and expired work appears here.',
+        };
+        const rows = pageWork.map((r) => ({
+          target: { kind: 'request' as const, id: r.id },
+          title: r.goal,
+          sub: r.id,
+          cells: [
+            statusChip(r.state),
+            r.targetScope || r.originScope
+              ? `<a class="v-mono v-meta" href="${esc(`/console/buzz/${encodeURIComponent(r.targetScope || r.originScope)}`)}">#${esc(r.targetScope || r.originScope)}</a>`
+              : '<span class="v-meta">—</span>',
+          ],
+        }));
         const body =
           total === 0
-            ? `<p class="sub">No results: no human work matches this search. <a href="${esc(clearFilterUrl('/console/human-work'))}">Clear search and filters</a></p>`
-            : renderTable(
-                ['Work', 'ID', 'State'],
-                pageWork.map((r) => [
-                  `<a class="v-strong" href="${esc(withReturnTo(requestDetailUrl(r.id), here))}">${esc(r.goal)}</a>`,
-                  `<span class="v-mono v-meta">${esc(r.id)}</span>`,
-                  statusChip(r.state),
-                ]),
-              ) +
+            ? `<p class="sub">${esc(emptyWhy[view])} <a href="${esc(clearFilterUrl('/console/human-work'))}">Clear search and filters</a></p>`
+            : inspectTable(['Work', 'State', 'Room'], rows, inspectLinkFor) +
               (offset + pageWork.length < total
                 ? `<p class="v-meta">explicit truncation: showing ${pageWork.length} of ${total} items</p>`
                 : '');
@@ -441,8 +573,7 @@ ${renderTable(['Room', 'Scope', 'Status', 'Pending', 'Stops', 'Budget used'], in
         const next =
           offset + pageWork.length < total
             ? listStateUrl('/console/human-work', { ...state, offset: offset + pageWork.length })
-            : null;
-        // The page is the approval queue plus the inventory behind it, so its
+            : null; // The page is the approval queue plus the inventory behind it, so its
         // title names the job (decide) rather than the row type (human work).
         sendHtml(
           ctx.res,
@@ -461,9 +592,19 @@ ${renderTable(['Room', 'Scope', 'Status', 'Pending', 'Stops', 'Budget used'], in
               prevUrl: prev,
               nextUrl: next,
               clearUrl: clearFilterUrl('/console/human-work'),
-              // Queue first — the decision is the point of the page; the table
-              // below is the full inventory of work that touched human minutes.
-              body: `${approvalQueue}${approvalQueue ? '<p class="v-eyebrow" style="margin:22px 0 8px;">All human work</p>' : ''}${body}`,
+              // Queue first — the decision is the point of the page; the
+              // table below is the inventory of work that touched human
+              // minutes. The whole body sits in the shared inspector layout,
+              // so a selection opens beside it rather than replacing it.
+              body: renderInspectLayout({
+                inner: `${tabBar}${approvalQueue}${
+                  approvalQueue ? '<p class="v-eyebrow" style="margin:22px 0 8px;">All human work</p>' : ''
+                }${body}`,
+                panel:
+                  inspectTarget && inspectTarget.kind === 'request' ? requestPanelFor(inspectTarget, ctx.at) : null,
+                closeHref,
+                label: 'Human work context',
+              }),
             }),
           }),
         );

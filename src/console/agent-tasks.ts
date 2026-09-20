@@ -384,7 +384,18 @@ function reviewActionHtml(requestId: string, review: ReviewLink | undefined): st
 }
 
 /** One expandable list row. Uses <details name="v-tasks"> so only one opens. */
-export function renderTaskRow(task: AgentTask, now: string, here: string, review?: ReviewLink): string {
+export function renderTaskRow(
+  task: AgentTask,
+  now: string,
+  here: string,
+  review?: ReviewLink,
+  /**
+   * Open this task in the shared inspector instead of leaving the list. Absent
+   * on surfaces with no inspector layout, where the title keeps linking to the
+   * record — one renderer, two honest behaviours, decided by the caller.
+   */
+  inspectHref?: (requestId: string) => string,
+): string {
   const r = task.request;
   const live = task.status.runtime === 'processing';
   const subLabel =
@@ -400,7 +411,11 @@ export function renderTaskRow(task: AgentTask, now: string, here: string, review
   <summary class="v-task-row-head">
     <div class="v-task-status">${badge(task.status, live)}</div>
     <div class="v-task-main">
-      <a class="v-strong v-truncate" href="${esc(withReturnTo(requestDetailUrl(r.id), here))}">${esc(r.goal)}</a>
+      ${
+        inspectHref
+          ? `<a class="v-strong v-truncate" href="${esc(inspectHref(r.id))}" data-inspect="${esc(`request:${r.id}`)}">${esc(r.goal)}</a>`
+          : `<a class="v-strong v-truncate" href="${esc(withReturnTo(requestDetailUrl(r.id), here))}">${esc(r.goal)}</a>`
+      }
       <div class="v-task-side">
         <span class="v-mono v-meta">${esc(r.originScope)}→${esc(r.targetScope)}</span>
         ${subLabel}${swarmLabel}${tokens}
@@ -455,8 +470,10 @@ export function renderAgentTaskList(
   now: string,
   here: string,
   reviews: ReadonlyMap<string, ReviewLink> = new Map(),
+  /** See `renderTaskRow`: supplied by the route when it can host a panel. */
+  inspectHref?: (requestId: string) => string,
 ): string {
-  const rows = tasks.map((t) => renderTaskRow(t, now, here, reviews.get(t.request.id))).join('');
+  const rows = tasks.map((t) => renderTaskRow(t, now, here, reviews.get(t.request.id), inspectHref)).join('');
   return `<div class="v-task-list" data-now="${esc(now)}">
   <div class="v-split" style="margin-bottom:14px;">
     <p class="v-lede" style="margin:0">Real-time view of Jcode coding-agent executions in flight. Expand a task to see its agents.</p>

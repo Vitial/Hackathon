@@ -81,7 +81,7 @@ export function renderMeetingRoomView(opts: {
   csrf: string;
   iceServers?: unknown[];
 }): string {
-  const { meeting, currentUserId, currentUserName, userRole, home, csrf } = opts;
+  const { meeting, currentUserId, currentUserName, userRole, home: _home, csrf } = opts;
   const isHost = meeting.hostUserId === currentUserId;
   const iceServers = opts.iceServers && opts.iceServers.length > 0 ? opts.iceServers : DEFAULT_ICE_SERVERS;
   const iconsJson = esc(JSON.stringify(MEETING_ICONS));
@@ -96,19 +96,19 @@ export function renderMeetingRoomView(opts: {
   <meta name="vital-csrf" content="${esc(csrf)}">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📹</text></svg>">
   <style>${stageTokensCss()}</style>
-  <link rel="stylesheet" href="${esc(home)}console/assets/meeting-room.css${MEETING_ASSET_VERSION}">
+  <link rel="stylesheet" href="/console/assets/meeting-room.css${MEETING_ASSET_VERSION}">
 </head>
 <body>
 <div class="meeting-container" id="meeting-room-app"
      data-meeting-id="${esc(meeting.id)}" data-user-id="${esc(currentUserId)}"
      data-user-name="${esc(currentUserName)}" data-is-host="${isHost}"
-     data-home="${esc(home)}" data-start-recording="${meeting.recordingEnabled ? 'true' : 'false'}"
+     data-start-recording="${meeting.recordingEnabled ? 'true' : 'false'}"
      data-icons="${iconsJson}">
 
   <!-- Floating header over the hero video -->
   <header class="meeting-header">
     <div class="meeting-title-cluster">
-      <a href="${esc(home)}console/meetings" class="meeting-back-btn" title="Back to Meetings" aria-label="Back to Meetings"><span data-icon="back"></span></a>
+      <a href="/console/meetings" class="meeting-back-btn" title="Back to Meetings" aria-label="Back to Meetings"><span data-icon="back"></span></a>
       <div>
         <h1 class="meeting-title">${esc(meeting.title)}</h1>
         <div class="meeting-meta">
@@ -299,7 +299,7 @@ export function renderMeetingRoomView(opts: {
 </div>
 
 <script id="meeting-ice-config" type="application/json">${esc(JSON.stringify(iceServers))}</script>
-<script src="${esc(home)}console/assets/meeting-room.js${MEETING_JS_VERSION}" defer></script>
+<script src="/console/assets/meeting-room.js${MEETING_JS_VERSION}" defer></script>
 </body>
 </html>
 `;
@@ -316,7 +316,7 @@ export function renderMeetingDetailView(opts: {
   home: string;
   csrf: string;
 }): string {
-  const { meeting, notes, transcript, recording, participants, home, csrf } = opts;
+  const { meeting, notes, transcript, recording, participants, home: _home, csrf } = opts;
   const status = meeting.processingStatus;
 
   return `
@@ -325,7 +325,7 @@ export function renderMeetingDetailView(opts: {
   <div class="detail-header-card">
     <div class="detail-title-row">
       <div>
-        <a href="${esc(home)}console/meetings" class="back-link">← All Meetings</a>
+        <a href="/console/meetings" class="back-link">← All Meetings</a>
         <h1 class="detail-title">${esc(meeting.title)}</h1>
         <div class="detail-meta">
           <span>📅 ${esc(new Date(meeting.createdAt).toLocaleDateString())}</span>
@@ -448,7 +448,7 @@ export function renderMeetingDetailView(opts: {
             ? `
           <div class="player-wrapper">
             <audio id="meeting-audio-player" controls style="width:100%;margin-top:8px;">
-              <source src="${esc(home)}api/meetings/${esc(meeting.id)}/recording" type="audio/${esc(recording.format)}">
+              <source src="/api/meetings/${esc(meeting.id)}/recording" type="audio/${esc(recording.format)}">
               Your browser does not support audio playback.
             </audio>
             <div class="player-meta">Size: ${(recording.sizeBytes / (1024 * 1024)).toFixed(1)} MB · SHA-256: <code>${esc(recording.sha256.slice(0, 12))}...</code></div>
@@ -500,7 +500,6 @@ export function renderMeetingDetailView(opts: {
 <script>
 (() => {
   const meetingId = "${esc(meeting.id)}";
-  const home = "${esc(home)}";
   const csrfToken = "${esc(csrf)}";
 
   window.seekAudio = (ts) => {
@@ -545,7 +544,7 @@ export function renderMeetingDetailView(opts: {
     history.scrollTop = history.scrollHeight;
 
     try {
-      const res = await fetch(home + 'api/meetings/' + encodeURIComponent(meetingId) + '/rag', {
+      const res = await fetch('/api/meetings/' + encodeURIComponent(meetingId) + '/rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-vital-csrf': csrfToken },
         body: JSON.stringify({ question: q })
@@ -566,8 +565,8 @@ export function renderMeetingDetailView(opts: {
 
   window.deleteMeetingConfirm = async () => {
     if (!confirm('Are you sure you want to delete this meeting and all associated intelligence?')) return;
-    await fetch(home + 'api/meetings/' + encodeURIComponent(meetingId) + '/delete', { method: 'POST', headers: { 'x-vital-csrf': csrfToken } });
-    window.location.href = home + 'console/meetings';
+    await fetch('/api/meetings/' + encodeURIComponent(meetingId) + '/delete', { method: 'POST', headers: { 'x-vital-csrf': csrfToken } });
+    window.location.href = '/console/meetings';
   };
 
   window.exportMeetingSummary = () => {
@@ -769,7 +768,7 @@ function formatMeetingDuration(seconds: number): string {
 }
 
 export function renderMeetingLibraryView(opts: { meetings: Meeting[]; home: string; csrf?: string }): string {
-  const { meetings, home, csrf } = opts;
+  const { meetings, home: _home, csrf } = opts;
 
   const activeMeetings = meetings.filter((m) => m.status === 'ACTIVE');
   const pastMeetings = meetings.filter((m) => m.status === 'ENDED');
@@ -865,10 +864,10 @@ export function renderMeetingLibraryView(opts: { meetings: Meeting[]; home: stri
               </div>
             </div>
             <div class="mcard-footer">
-              <button type="button" class="btn-copy-card-link" onclick="copyCardMeetingLink('${esc(home)}console/meetings/${esc(m.id)}/room', this)" title="Copy Room Link">
+              <button type="button" class="btn-copy-card-link" onclick="copyCardMeetingLink('/console/meetings/${esc(m.id)}/room', this)" title="Copy Room Link">
                 📋 Copy Link
               </button>
-              <a href="${esc(home)}console/meetings/${esc(m.id)}/room" class="btn-join-room">
+              <a href="/console/meetings/${esc(m.id)}/room" class="btn-join-room">
                 Join Call →
               </a>
             </div>
@@ -924,7 +923,7 @@ export function renderMeetingLibraryView(opts: { meetings: Meeting[]; home: stri
               </div>
             </div>
             <div class="mcard-footer">
-              <a href="${esc(home)}console/meetings/${esc(m.id)}" class="btn-view-intel">
+              <a href="/console/meetings/${esc(m.id)}" class="btn-view-intel">
                 View Intelligence →
               </a>
             </div>
@@ -950,7 +949,7 @@ export function renderMeetingLibraryView(opts: { meetings: Meeting[]; home: stri
         </div>
         <button type="button" class="modal-close-btn" onclick="closeNewMeetingModal()" aria-label="Close modal">✕</button>
       </div>
-      <form action="${esc(home)}api/meetings/create" method="POST" id="new-meeting-form">
+      <form action="/api/meetings/create" method="POST" id="new-meeting-form">
         ${csrf ? `<input type="hidden" name="csrf" value="${esc(csrf)}">` : ''}
         <div class="form-group">
           <label for="meeting-title-input">Meeting Title</label>

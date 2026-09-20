@@ -103,6 +103,21 @@ const ICONS = {
   help: icon(
     '<circle cx="12" cy="12" r="9"/><path d="M9.4 9.2A2.7 2.7 0 0 1 12 7.4c1.6 0 2.7 1 2.7 2.3 0 2-2.7 2.1-2.7 4.2"/><circle cx="12" cy="17.3" r="0.9" fill="currentColor" stroke="none"/>',
   ),
+  // Ranked attention: a descending list — the glyph says the order is the
+  // point, which is what separates Feed from a plain record list.
+  inbox: icon(
+    '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="14" y2="12"/><line x1="4" y1="17" x2="9" y2="17"/>',
+  ),
+  // The work queue: an inbox tray, not a document — requests arrive and are
+  // worked, they are not a pile of files.
+  requests: icon(
+    '<path d="M22 12h-5.5l-1.5 2.4h-6L7.5 12H2"/><path d="M5.4 5.2 2.6 12v5a2 2 0 0 0 2 2h14.8a2 2 0 0 0 2-2v-5l-2.8-6.8A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.8 1.2z"/>',
+  ),
+  // A claim is a statement that carries its own provenance: a card with a
+  // check, distinct from the Ledger's document glyph above.
+  claims: icon(
+    '<path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/><path d="M8.5 11.8l2.2 2.2 4.8-5"/>',
+  ),
 };
 
 interface RailItem {
@@ -193,6 +208,7 @@ export function renderConsoleShell(opts: {
   const pendingTotal = rooms.reduce((s, r) => s + (r.pending || 0), 0);
   const inChat = Boolean(activeScope && activeScope !== 'dashboard' && activeScope !== 'issues');
   const RAIL_KEYS = new Set([
+    'inbox',
     'dashboard',
     'activity',
     'approvals',
@@ -223,7 +239,10 @@ export function renderConsoleShell(opts: {
   const active = RAIL_KEYS.has(candidate) ? candidate : 'dashboard';
 
   const titleFor: Record<string, string> = {
-    dashboard: 'Dashboard',
+    // Matches the rail item label so the top bar and the rail never name the
+    // current page differently.
+    inbox: 'Inbox',
+    dashboard: 'Overview',
     activity: 'Activity',
     approvals: 'Approvals',
     agentTasks: 'Agent Tasks',
@@ -249,28 +268,43 @@ export function renderConsoleShell(opts: {
   };
   const pageTitle = titleFor[active] ?? 'Console';
 
-  const overview: RailItem[] = [
+  // The rail groups the user's operating loop, not the implementation modules:
+  //
+  //   Feed       what needs attention now
+  //   Work       what is requested, executed, reviewed and delivered
+  //   Ledger     what is known, decided and proven
+  //   Systems    how workflows, skills and agent runs are behaving
+  //   Governance what can be audited, exported, stopped or changed
+  //
+  // Grouping over the existing route keys only: every href below already
+  // worked before the regroup, so a label change can never strand a page. Rooms
+  // is deliberately absent — the Buzz surface owns rooms, and this rail
+  // navigates Console pages (see design.md, "Two surfaces"); the single topbar
+  // Chat bridge is the way across.
+
+  // Feed — ranked attention. Approvals is its first real slice: the shelled
+  // queue at /console/human-work renders the request-approval contract
+  // (renderReview) in the Console chrome. It used to point at
+  // /console/dashboard?tab=approvals, which yanked you out of the Console into
+  // the legacy dashboard chrome to press the same button.
+  const feed: RailItem[] = [
+    // The ranked attention queue: the one place a person can see every piece of
+    // work that is waiting on them, built from reads that already existed.
+    {
+      key: 'inbox',
+      label: 'Inbox',
+      href: '/console/inbox',
+      icon: ICONS.inbox,
+      title: 'Ranked attention: decisions, blocked work and evidence in question',
+    },
     {
       key: 'dashboard',
-      label: 'Dashboard',
+      label: 'Overview',
       href: '/console/dashboard',
       icon: ICONS.dashboard,
       id: 'console-dashboard-btn',
       title: 'Executive overview (g h)',
     },
-    {
-      key: 'activity',
-      label: 'Activity',
-      href: '/console/dashboard?tab=activity',
-      icon: ICONS.activity,
-      title: 'Chronological milestones (g f)',
-    },
-  ];
-  const operations: RailItem[] = [
-    // Approvals is the shelled queue at /console/human-work, which renders the
-    // same request-approval contract (renderReview) in the Console chrome. It
-    // used to point at /console/dashboard?tab=approvals, which yanked you out of
-    // the Console into the legacy dashboard chrome to press the same button.
     {
       key: 'approvals',
       label: 'Approvals',
@@ -278,6 +312,17 @@ export function renderConsoleShell(opts: {
       icon: ICONS.approvals,
       count: pendingTotal,
       title: 'Human decision queue (g a)',
+    },
+  ];
+
+  // Work — the bounded life of a request, from admission to delivery.
+  const work: RailItem[] = [
+    {
+      key: 'requests',
+      label: 'Requests',
+      href: '/console/requests',
+      icon: ICONS.requests,
+      title: 'Requests and their admission state',
     },
     {
       key: 'agentTasks',
@@ -287,52 +332,11 @@ export function renderConsoleShell(opts: {
       title: 'Ongoing Jcode agent executions',
     },
     {
-      key: 'ledger',
-      label: 'Ledger',
-      href: '/console/dashboard?tab=ledger',
-      icon: ICONS.ledger,
-      title: 'Reality ledger (g l)',
-    },
-    {
-      key: 'workflows',
-      label: 'Workflows',
-      href: '/console/dashboard?tab=workflows',
-      icon: ICONS.workflows,
-      id: 'console-workflows-btn',
-      title: 'Compiler and skill cards (g w)',
-    },
-    {
-      key: 'governance',
-      label: 'Governance',
-      href: '/console/dashboard?tab=governance',
-      icon: ICONS.governance,
-      title: 'Policy, spend and stops (g g)',
-    },
-    {
       key: 'meetings',
       label: 'Meetings',
       href: '/console/meetings',
       icon: ICONS.meetings,
       title: 'Meeting library and live rooms',
-    },
-    // Chat and Rooms live in the Workspace shell, not here: the rail keeps a
-    // single topbar Chat button as the way out, never a second nav copy.
-  ];
-  const system: RailItem[] = [
-    {
-      key: 'compiler',
-      label: 'Compiler',
-      href: '/console/compiler',
-      icon: ICONS.compiler,
-      title: 'Why cards are trusted (or not)',
-    },
-    { key: 'digest', label: 'Digest', href: '/console/digest', icon: ICONS.digest, title: 'Grouped NOTICEs' },
-    {
-      key: 'learning',
-      label: 'Learning',
-      href: '/console/learning',
-      icon: ICONS.learning,
-      title: 'Label routing decisions',
     },
     // The index existed only as a URL you had to already know. A review is
     // opened against a mission, and this is where a reader finds out which
@@ -344,11 +348,9 @@ export function renderConsoleShell(opts: {
       icon: ICONS.review,
       title: 'Per-mission diff gate (hunk decisions, secret scan, snapshot)',
     },
-    { key: 'audit', label: 'Audit', href: '/console/audit', icon: ICONS.audit, title: 'Immutable tenant log' },
-    { key: 'data', label: 'Data', href: '/console/data', icon: ICONS.data, title: 'Export and erasure' },
   ];
   if (isEngineer) {
-    operations.push({
+    work.push({
       key: 'issues',
       label: 'Issues',
       href: '/console/issues',
@@ -357,7 +359,73 @@ export function renderConsoleShell(opts: {
       title: 'Engineering issues board',
     });
   }
-  const admin: RailItem[] = [
+
+  // Ledger — the system of record. Activity is chronological milestones over
+  // the same records, so it reads from here rather than from Feed.
+  const ledger: RailItem[] = [
+    {
+      key: 'ledger',
+      label: 'Ledger',
+      href: '/console/dashboard?tab=ledger',
+      icon: ICONS.ledger,
+      title: 'Reality ledger (g l)',
+    },
+    {
+      key: 'claims',
+      label: 'Claims',
+      href: '/console/claims',
+      icon: ICONS.claims,
+      title: 'Typed claims and their provenance',
+    },
+    {
+      key: 'activity',
+      label: 'Activity',
+      href: '/console/dashboard?tab=activity',
+      icon: ICONS.activity,
+      title: 'Chronological milestones (g f)',
+    },
+  ];
+
+  // Systems — bounded execution and the learning gate over it.
+  const systems: RailItem[] = [
+    {
+      key: 'workflows',
+      label: 'Workflows',
+      href: '/console/dashboard?tab=workflows',
+      icon: ICONS.workflows,
+      id: 'console-workflows-btn',
+      title: 'Compiler and skill cards (g w)',
+    },
+    {
+      key: 'compiler',
+      label: 'Compiler',
+      href: '/console/compiler',
+      icon: ICONS.compiler,
+      title: 'Why cards are trusted (or not)',
+    },
+    {
+      key: 'learning',
+      label: 'Learning',
+      href: '/console/learning',
+      icon: ICONS.learning,
+      title: 'Label routing decisions',
+    },
+    { key: 'digest', label: 'Digest', href: '/console/digest', icon: ICONS.digest, title: 'Grouped NOTICEs' },
+  ];
+
+  // Governance — the lower-frequency control surface. The legacy
+  // governance dashboard tab keeps its own name inside the group that now owns
+  // it; its page heading is "Governance & Policy Control Plane".
+  const governance: RailItem[] = [
+    {
+      key: 'governance',
+      label: 'Governance',
+      href: '/console/dashboard?tab=governance',
+      icon: ICONS.governance,
+      title: 'Policy, spend and stops (g g)',
+    },
+    { key: 'audit', label: 'Audit', href: '/console/audit', icon: ICONS.audit, title: 'Immutable tenant log' },
+    { key: 'data', label: 'Data', href: '/console/data', icon: ICONS.data, title: 'Export and erasure' },
     { key: 'team', label: 'Team', href: '/team', icon: ICONS.team, title: 'Members, invitations and roles' },
     { key: 'setup', label: 'Setup', href: '/setup', icon: ICONS.settings, title: 'Activation and sources' },
     { key: 'account', label: 'Account', href: '/account', icon: ICONS.account, title: 'Password, MFA and sessions' },
@@ -365,10 +433,11 @@ export function renderConsoleShell(opts: {
 
   const railActive = (key: string) => (active === key ? 'is-active' : '');
   const railHtml = [
-    railSection('Overview', overview, active),
-    railSection('Operations', operations, active),
-    railSection('System', system, active),
-    railSection('Administration', admin, active),
+    railSection('Feed', feed, active),
+    railSection('Work', work, active),
+    railSection('Ledger', ledger, active),
+    railSection('Systems', systems, active),
+    railSection('Governance', governance, active),
   ].join('');
 
   return `

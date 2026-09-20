@@ -200,7 +200,11 @@ Sentiment tints (per-theme pairs so pills read on both modes):
 
 ## What pages MUST share
 
-- Wordmark, teal accent ≤5%, Inter + JetBrains Mono.
+- Wordmark, teal accent ≤5%, Outfit + JetBrains Mono.
+  (Typography was recorded here as Inter in an earlier pass. The rendered
+  Console stack is Outfit, and `theme.ts` is the implementation source of truth
+  — this section names intent, `theme.ts` names paint. Resolved 2026-09-20 per
+  `redesign.md` §20 decision 9, so the redesign never reads two font stacks.)
 - Rail + ⌘K-pill + theme toggle chrome.
 - Card voice: 12px radius, hairline border, layered raise on hover.
 - Review queue voice: count eyebrow, goal-first cards, evidence collapsed.
@@ -214,6 +218,9 @@ Sentiment tints (per-theme pairs so pills read on both modes):
 
 ### tokens.css
 
+Illustrative: the shipped values live in `theme.ts`, and this block dates from
+an earlier palette pass. Read `theme.ts` for the paint that actually renders.
+
 ```css
 :root {
   --v-bg-0: oklch(18% 0.02 260);  --v-bg-1: oklch(23% 0.025 260);
@@ -223,8 +230,8 @@ Sentiment tints (per-theme pairs so pills read on both modes):
   --v-accent: oklch(80% 0.12 180); --v-accent-ink: oklch(20% 0.05 180);
   --v-fact: oklch(72% 0.16 155);  --v-hypo: oklch(78% 0.14 80);
   --v-risk: oklch(70% 0.18 25);   --v-pred: oklch(72% 0.12 280);
-  --font-display: "Inter", system-ui, sans-serif;
-  --font-body: "Inter", system-ui, sans-serif;
+  --font-display: "Outfit", system-ui, sans-serif;
+  --font-body: "Outfit", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
   --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;

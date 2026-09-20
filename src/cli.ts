@@ -70,7 +70,7 @@ import { workerBuzzSurface } from './talk/buzz-runtime.ts';
  *   tsx src/cli.ts stop --engage <scope>/<action-class> --reason <text> --tenant slug [--recovery-requires <text>] [--db <target>]
  *   tsx src/cli.ts report [--db path] [--out report.html] [--tenant slug]
  *   tsx src/cli.ts report --manifest <snapshot|evidence-package|backup-reference> --tenant slug
- *   tsx src/cli.ts serve [--db var/vital.db] [--port 3100] [--tenant acme] [--trust-proxy] [--secure-cookies]
+ *   tsx src/cli.ts serve [--db var/vital.db] [--port 3100] [--tenant acme] [--trust-proxy] [--secure-cookies] [--base-domain example.com]
  *   tsx src/cli.ts drill --policy-only [--tenant slug] [--db <target>]
  *   tsx src/cli.ts drill --runtime --scope <scope> --class <action-class> --tenant <slug> [--db <target>]
  *   tsx src/cli.ts ingest-files --tenant acme --scope engineering --source dir --artifacts dir --db path
@@ -507,6 +507,9 @@ if (cmd === 'status') {
   // by --trust-proxy — trusting proxy headers and requiring TLS are independent,
   // and a loopback/TLS-terminating dev setup wants the first without the second.
   const secureCookies = args.includes('--secure-cookies') || process.env.SECURE_COOKIES === '1';
+  // Multi-org subdomain mode: <slug>.<base-domain> resolves per request;
+  // unset = legacy single-tenant mode on the bound tenant.
+  const baseDomain = flag('--base-domain') ?? process.env.VITAL_BASE_DOMAIN ?? undefined;
   const server = await startConsoleServer(db, createLedger(db), createCoordinator(db), new OrganizationalCompiler(db), {
     port,
     host,
@@ -517,6 +520,7 @@ if (cmd === 'status') {
     operatorKeys: parseOperatorKeys(process.env.VITAL_OPERATOR_KEYS),
     trustProxy,
     secureCookies,
+    ...(baseDomain ? { baseDomain } : {}),
   });
   const localUrl =
     server.host === '0.0.0.0' || server.host === '::'

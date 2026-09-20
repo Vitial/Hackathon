@@ -1,7 +1,21 @@
 import type { Ledger } from '../ledger/ledger.ts';
 import type { Coordinator } from '../coord/coordinator.ts';
+import type { CoordinationRequest } from '../core/types.ts';
 import { approvalMessage } from '../gov/operator.ts';
 import { SAMPLE_REQUEST_PREFIX, SAMPLE_SCOPE } from './activation.ts';
+
+/**
+ * The one definition of "this request is waiting on a human".
+ *
+ * Exported because the Feed (`feed.ts`) ranks exactly the queue this page
+ * renders: two copies of the predicate would let the Inbox count a decision the
+ * approvals page does not show, which is the kind of drift that reads as a bug
+ * in the queue rather than in the copy of a filter. An ADMITTED REQUEST that bid
+ * human minutes is the same test the coordinator charges human time against.
+ */
+export function awaitingHumanReview(r: CoordinationRequest): boolean {
+  return r.state === 'ADMITTED' && r.messageClass === 'REQUEST' && r.bid.humanMinutes > 0;
+}
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -29,6 +43,13 @@ export interface ReviewOptions {
    * keep its exact shape, this one is only ever painted.
    */
   actorLabel?: string;
+  /**
+   * Optional inspector link for a card's title. Supplied by pages that render
+   * the shared inspector (`inspector.ts`); absent on the dashboard, which has no
+   * layout to open a panel into. The decision forms are unaffected either way —
+   * the card remains the place a human approves or declines.
+   */
+  inspectHref?: (requestId: string) => string;
 }
 
 export function operatorFields(opts: ReviewOptions, id: string, action: string): string {
@@ -58,6 +79,8 @@ export const REVIEW_STYLE = `<style>
 .rv-evidence summary{cursor:pointer;font-weight:600;font-size:12px;color:var(--v-ink)}
 .rv-evidence ul{margin:8px 0 0;padding-left:18px;display:grid;gap:6px}
 .rv-evidence code{font-family:var(--font-mono);font-size:11px}
+.rv-uncertain{background:var(--v-tint-risk-bg);color:var(--v-tint-risk-ink);border:1px solid var(--v-line);border-radius:8px;padding:8px 10px;margin:8px 0 0;font-size:12px;line-height:1.45}
+.rv-uncertain strong{font-weight:700}
 .rv-forms{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .rv-forms form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .rv-forms button{border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer;min-height:36px}
@@ -71,21 +94,36 @@ export const REVIEW_STYLE = `<style>
 
 /** Session-specific controls must never enter the shared report cache or static exports. */
 export async function renderReview(coord: Coordinator, ledger: Ledger, opts: ReviewOptions): Promise<string> {
-  const pending = (await coord.list(opts.tenant, { state: 'ADMITTED' })).filter(
-    (r) => r.messageClass === 'REQUEST' && r.bid.humanMinutes > 0,
-  );
+  const pending = (await coord.list(opts.tenant, { state: 'ADMITTED' })).filter(awaitingHumanReview);
   const cards: string[] = [];
   const page = Math.min(opts.page ?? 0, Math.max(0, Math.ceil(pending.length / 100) - 1));
   for (const r of pending.slice(page * 100, (page + 1) * 100)) {
     const evidence: string[] = [];
+    // Uncertainty is counted as the evidence is read, not asserted separately:
+    // "N of M sources could not be loaded" and "N cited claims are disputed or
+    // stale" are the two ways this page can be honest about a decision it is
+    // asking a person to sign (redesign.md §7.4, review context item 5).
+    let unavailable = 0;
+    let questionable = 0;
     for (const id of r.claimRefs.slice(0, 20)) {
       const c = await ledger.get(opts.tenant, id);
+      if (!c) unavailable += 1;
+      else if (c.status === 'DISPUTED' || c.status === 'STALE') questionable += 1;
       evidence.push(
         c
           ? `<li><a href="/console/claims/${esc(encodeURIComponent(id))}"><code>${esc(id)}</code></a> · ${esc(c.kind)} · ${esc(c.status)}<br>${esc(c.statement)}<br><small>Source: ${esc(c.provenance.sourceUri)}</small></li>`
           : `<li><code>${esc(id)}</code>: unavailable evidence; review before approving</li>`,
       );
     }
+    const uncertaintyParts: string[] = [];
+    if (unavailable > 0)
+      uncertaintyParts.push(
+        `${unavailable} of ${r.claimRefs.length} cited source(s) could not be loaded, so this page cannot show what the decision rests on`,
+      );
+    if (questionable > 0) uncertaintyParts.push(`${questionable} cited claim(s) are disputed or stale`);
+    const uncertainty = uncertaintyParts.length
+      ? `<p class="rv-uncertain"><strong>Uncertainty:</strong> ${esc(uncertaintyParts.join('; '))}.</p>`
+      : '';
     const forms = opts.canApprove
       ? ['approve', 'decline']
           .map((action) => {
@@ -104,12 +142,16 @@ ${operatorFields(opts, r.id, action)}
       r.id.startsWith(SAMPLE_REQUEST_PREFIX) || r.originScope === SAMPLE_SCOPE
         ? `<p style="background:var(--v-tint-warn-bg);color:var(--v-tint-warn-ink);padding:8px 10px;border-radius:8px;font-weight:700;font-size:12px;border:1px solid var(--v-line);">SAMPLE WALKTHROUGH: labeled demo data in scope ${esc(SAMPLE_SCOPE)}, not customer evidence.</p>`
         : '';
+    const titleHref = opts.inspectHref
+      ? `<a href="${esc(opts.inspectHref(r.id))}" data-inspect="${esc(`request:${r.id}`)}">${esc(r.goal)}</a>`
+      : `<a href="/console/requests/${esc(encodeURIComponent(r.id))}">${esc(r.goal)}</a>`;
     cards.push(`<article class="rv-card" data-review-request="${esc(r.id)}">
 ${sampleBanner}
-<h3><a href="/console/requests/${esc(encodeURIComponent(r.id))}">${esc(r.goal)}</a></h3><p class="rv-meta">${esc(r.id)} · ${esc(r.originScope)} → ${esc(r.targetScope)}</p>
+<h3>${titleHref}</h3><p class="rv-meta">${esc(r.id)} · ${esc(r.originScope)} → ${esc(r.targetScope)}</p>
 <p class="rv-row">Deliverable: ${esc(r.deliverableSchema)} · Deadline: ${esc(r.bid.deadline)}</p>
 <p class="rv-row">Budget: ${r.bid.dollars} dollars · ${r.bid.tokens} tokens · ${r.bid.humanMinutes} human minutes</p>
 <details class="rv-evidence"><summary>Evidence (${r.claimRefs.length} references)</summary><ul>${evidence.join('') || '<li>No evidence references</li>'}</ul>${r.claimRefs.length > 20 ? `<p>Only the first 20 references are shown. <a href="/console/requests/${esc(encodeURIComponent(r.id))}">Inspect all evidence before approving.</a></p>` : ''}</details>
+${uncertainty}
 <div class="rv-forms">${forms}</div><p role="status" aria-live="polite" data-review-status></p></article>`);
   }
   return `${REVIEW_STYLE}<section id="pending-review" class="review-root rv-queue"><p class="rv-eyebrow">Approval queue · ${pending.length} awaiting</p><h2 class="rv-title">Pending review</h2>

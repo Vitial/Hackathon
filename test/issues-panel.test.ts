@@ -184,6 +184,71 @@ T('board mechanics: create, move, comment, delta sync', async () => {
   eq(ok?.state, 'TO DO');
 });
 
+T('the list row opens the shared inspector without leaving the board', async () => {
+  const { db, ledger, coord, comp, owner } = await seeded();
+  const engineer = await activeMember(db, owner, 'insp@acme.test', 'member', 'engineering');
+  const issue = await createIssue(
+    db,
+    TEN,
+    { title: 'Rotate the deploy keys', state: 'TO DO', priority: 'High', labels: ['DevOps'] },
+    { userId: engineer.id, email: engineer.email },
+    NOW,
+  );
+  const server = await startConsoleServer(db, ledger, coord, comp, { tenant: TEN, now: () => NOW });
+  const url = `http://127.0.0.1:${server.port}`;
+  try {
+    const session = await engineerSession(server.port, engineer.email, 'a-long-enough-password')();
+    const get = (path: string) => fetch(`${url}${path}`, { headers: { cookie: session.cookie }, redirect: 'manual' });
+
+    // The list is the board's table surface, so the row — not the draggable
+    // card — is what opens the panel. A card is dragged; a drag that is also a
+    // link is a bug waiting to happen.
+    const page = await (await get(`/console/issues?view=list&inspect=issue:${issue.id}`)).text();
+    eq(page.includes('data-inspect-layout'), true, 'the board renders the inspect region:');
+    eq(page.includes(`data-inspect="issue:${issue.id}"`), true, 'the list row is the trigger:');
+    eq(
+      page.includes(`href="/console/issues?view=list&amp;inspect=issue%3A${issue.id}"`),
+      true,
+      'the trigger is a real link, filters intact:',
+    );
+    eq(page.includes(`data-issue-open="${issue.id}"`), true, 'the panel hands editing to the board\u2019s own drawer:');
+    // …and the view the URL asks for is the view the server rendered, so a
+    // selected issue is shareable rather than a localStorage accident.
+    eq(page.includes('id="iss-list-container">'), true, 'view=list renders the list:');
+    eq(page.includes('id="iss-columns" style="display:none;"'), true, 'and not the kanban:');
+    eq(page.includes('Rotate the deploy keys'), true, 'the panel carries the issue the row named:');
+    eq(page.includes('TO DO'), true, 'with its own state, verbatim:');
+
+    // The panel alone, with no chrome and no board: what the script swaps in.
+    const fragment = await get(`/console/issues?inspect=issue:${issue.id}&fragment=1`);
+    eq(fragment.status, 200);
+    const fragmentHtml = await fragment.text();
+    // `vc-ins-head` is the panel's own head; the shared script mentions
+    // `.vc-ins-title` in its selector, so that class alone would prove nothing.
+    eq(fragmentHtml.includes('class="vc-ins-head"'), true, 'the fragment is the panel:');
+    eq(fragmentHtml.includes('iss-board'), false, 'and only the panel:');
+
+    // A fragment with no selection is a caller error, not a page.
+    const noTarget = await get('/console/issues?fragment=1');
+    eq(noTarget.status, 400, 'fragment=1 without a target is refused:');
+
+    // An id the board did not read is stated, never invented around.
+    const missing = await get('/console/issues?inspect=issue:iss_nope&fragment=1');
+    const missingHtml = await missing.text();
+    eq(missingHtml.includes('UNAVAILABLE'), true, 'an unread issue is an honest panel:');
+    eq(missingHtml.includes('Rotate the deploy keys'), false, 'and borrows no other row\u2019s data:');
+
+    // A malformed selection opens nothing at all — no panel, and no page lost.
+    const junk = await get('/console/issues?inspect=rot13:iss_1');
+    const junkHtml = await junk.text();
+    eq(junk.status, 200);
+    eq(junkHtml.includes('class="vc-ins-head"'), false, 'an unknown kind opens no panel:');
+    eq(junkHtml.includes('iss-board'), true, 'and the board still renders:');
+  } finally {
+    await server.close();
+  }
+});
+
 T('anonymous callers are refused everywhere on the board', async () => {
   const { db, ledger, coord, comp } = await seeded();
   const server = await startConsoleServer(db, ledger, coord, comp, { tenant: TEN, now: () => NOW });

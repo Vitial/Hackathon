@@ -31,7 +31,6 @@ export const MEETING_ROOM_JS = String.raw`(() => {
   var userId = app.getAttribute('data-user-id');
   var userName = app.getAttribute('data-user-name');
   var isHost = app.getAttribute('data-is-host') === 'true';
-  var home = app.getAttribute('data-home') || '/';
   var startRecordingFlag = app.getAttribute('data-start-recording') === 'true';
 
   var csrfMeta = document.querySelector('meta[name="vital-csrf"]');
@@ -148,7 +147,7 @@ export const MEETING_ROOM_JS = String.raw`(() => {
   // ------------------------------------------------ 2. signaling socket ----
   function connectSignaling() {
     var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var wsUrl = protocol + '//' + window.location.host + home + 'api/meetings/signal?meetingId='
+    var wsUrl = protocol + '//' + window.location.host + '/api/meetings/signal?meetingId='
       + encodeURIComponent(meetingId) + '&name=' + encodeURIComponent(userName);
     try {
       ws = new WebSocket(wsUrl);
@@ -251,7 +250,7 @@ export const MEETING_ROOM_JS = String.raw`(() => {
         if (!isHost) {
           toast('The host has concluded this meeting. Opening summary...');
           setTimeout(function () {
-            window.location.href = home + 'console/meetings/' + encodeURIComponent(meetingId);
+window.location.href = '/console/meetings/' + encodeURIComponent(meetingId);
           }, 1600);
         }
         break;
@@ -764,7 +763,7 @@ export const MEETING_ROOM_JS = String.raw`(() => {
     mediaRecorder.onstop = async function () {
       var blob = new Blob(recordedChunks, { type: 'video/webm' });
       var durationSec = Math.max(1, Math.round((Date.now() - meetingStartTime) / 1000));
-      await fetch(home + 'api/meetings/' + encodeURIComponent(meetingId) + '/recording?durationSeconds=' + durationSec, {
+      await fetch('/api/meetings/' + encodeURIComponent(meetingId) + '/recording?durationSeconds=' + durationSec, {
         method: 'POST',
         headers: { 'Content-Type': 'video/webm', 'x-vital-csrf': csrfToken },
         body: blob
@@ -819,7 +818,7 @@ export const MEETING_ROOM_JS = String.raw`(() => {
         };
         wsSend({ type: 'live-transcript', meetingId: meetingId, payload: segment });
         renderTranscriptSegment(segment);
-        fetch(home + 'api/meetings/' + encodeURIComponent(meetingId) + '/transcript', {
+        fetch('/api/meetings/' + encodeURIComponent(meetingId) + '/transcript', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-vital-csrf': csrfToken },
           body: JSON.stringify(segment)
@@ -1170,11 +1169,11 @@ export const MEETING_ROOM_JS = String.raw`(() => {
     if (screenStream) screenStream.getTracks().forEach(function (t) { t.stop(); });
     var headers = { 'x-vital-csrf': csrfToken };
     if (isHost) {
-      await fetch(home + 'api/meetings/' + encodeURIComponent(meetingId) + '/end', { method: 'POST', headers: headers }).catch(function () {});
-      window.location.href = home + 'console/meetings/' + encodeURIComponent(meetingId);
-    } else {
-      await fetch(home + 'api/meetings/' + encodeURIComponent(meetingId) + '/leave', { method: 'POST', headers: headers }).catch(function () {});
-      window.location.href = home + 'console/meetings';
+await fetch('/api/meetings/' + encodeURIComponent(meetingId) + '/end', { method: 'POST', headers: headers }).catch(function () {});
+      window.location.href = '/console/meetings/' + encodeURIComponent(meetingId);
+
+      await fetch('/api/meetings/' + encodeURIComponent(meetingId) + '/leave', { method: 'POST', headers: headers }).catch(function () {});
+      window.location.href = '/console/meetings';
     }
   }
 

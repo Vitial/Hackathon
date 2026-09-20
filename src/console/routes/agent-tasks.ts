@@ -20,8 +20,21 @@ import { requireAuth, type AuthContext, type Capability, type RouteDef } from '.
 import type { AsyncDb } from '../../core/db.ts';
 import type { Coordinator } from '../../coord/coordinator.ts';
 import type { CoordinationRequest } from '../../core/types.ts';
-import { renderListPage, esc } from '../render.ts';
+import { renderListPage, esc, withReturnTo, requestDetailUrl } from '../render.ts';
 import { clearFilterUrl, decodeListState } from '../report.ts';
+import {
+  FRAGMENT_PARAM,
+  INSPECT_PARAM,
+  buzzHrefFor,
+  hrefWithoutInspect,
+  inspectHref,
+  parseInspect,
+  renderInspectLayout,
+  renderInspectorPanel,
+  requestPanel,
+  unavailablePanel,
+  type InspectTarget,
+} from '../inspector.ts';
 import {
   buildTasks,
   renderAgentTaskDetail,
@@ -62,6 +75,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 /** The return target a detail link carries, so its Back button keeps filters. */
 function hereOf(ctx: { path: string; url: URL }): string {
   return ctx.path + (ctx.url.search || '');
+}
+
+/** The inspector link builder for this page, filters preserved. */
+function inspectLinkFor(ctx: { path: string; url: URL }): (requestId: string) => string {
+  return (id) => inspectHref(ctx.path, ctx.url.search || '', { kind: 'request', id });
 }
 
 /**
@@ -172,8 +190,37 @@ export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
           if (!page.length && q) {
             empty = `<p class="v-meta">No matching tasks. <a href="${esc(clearFilterUrl('/console/agent-tasks'))}">Clear search</a></p>`;
           }
+          // The shared inspector: a task can be peeked at without losing the
+          // live list, and the panel carries the record, the room and the
+          // evidence links. Rows are agent tasks, so the panel's own fields are
+          // the ones the task already read.
+          const inspectTarget = parseInspect(ctx.url.searchParams.get(INSPECT_PARAM));
+          const closeHref = hrefWithoutInspect(ctx.path, ctx.url.search || '');
+          const panelFor = (target: InspectTarget, at: string) => {
+            const task = tasks.find((t) => t.request.id === target.id);
+            if (!task)
+              return unavailablePanel(
+                target,
+                'This task is not among the rows this page read — it may be older than a page, or outside the current filter.',
+              );
+            const r = task.request;
+            return requestPanel(r, {
+              at,
+              summary: `Agent task, currently ${task.status.runtime}. Approval records a decision to BEGIN work; this panel is a view of the request, not a second copy of it.`,
+              recordHref: withReturnTo(requestDetailUrl(r.id), closeHref),
+              buzzHref: buzzHrefFor(r.targetScope || r.originScope),
+            });
+          };
+          if (inspectTarget && ctx.url.searchParams.get(FRAGMENT_PARAM) === '1') {
+            // The live-list script polls JSON on this same path; a fragment is
+            // never JSON, so the two never contend for a request.
+            ctx.res.writeHead(200, { 'content-type': HTML, ...NO_STORE });
+            ctx.res.end(renderInspectorPanel(panelFor(inspectTarget, now)));
+            return;
+          }
           const reviews = await reviewsByMission(ctx.env.db, tenant);
-          const body = `${renderAgentTaskList(page, totals, now, here, reviews)}${empty}` + listScript();
+          const body =
+            `${renderAgentTaskList(page, totals, now, here, reviews, inspectLinkFor(ctx))}${empty}` + listScript();
           const prev =
             offset > 0
               ? `/console/agent-tasks?offset=${Math.max(0, offset - limit)}${q ? `&q=${encodeURIComponent(state.q ?? '')}` : ''}`
@@ -189,18 +236,23 @@ export function agentTasksRoutes(): RouteDef<AgentTasksEnv>[] {
               navKey: 'agentTasks',
               hideHeader: true,
               drawer: ctx.url.searchParams.get('drawer') === '1',
-              body: renderListPage({
-                title: 'Agent Tasks',
-                heading: 'Ongoing Tasks',
-                searchAction: '/console/agent-tasks',
-                query: state.q ?? '',
-                total,
-                truncated: offset + page.length < total,
-                shown: page.length,
-                prevUrl: prev,
-                nextUrl: next,
-                clearUrl: clearFilterUrl('/console/agent-tasks'),
-                body,
+              body: renderInspectLayout({
+                inner: renderListPage({
+                  title: 'Agent Tasks',
+                  heading: 'Ongoing Tasks',
+                  searchAction: '/console/agent-tasks',
+                  query: state.q ?? '',
+                  total,
+                  truncated: offset + page.length < total,
+                  shown: page.length,
+                  prevUrl: prev,
+                  nextUrl: next,
+                  clearUrl: clearFilterUrl('/console/agent-tasks'),
+                  body,
+                }),
+                panel: inspectTarget ? panelFor(inspectTarget, now) : null,
+                closeHref,
+                label: 'Agent task context',
               }),
             }),
           );

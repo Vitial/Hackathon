@@ -404,6 +404,12 @@ export interface SearchPage<T> {
 
 export interface RequestSearchOptions {
   q?: string;
+  /**
+   * Restrict to these exact ids, in one statement. Callers that already know
+   * which records they want (a room's linked records) should not have to fetch
+   * a page and filter it, and should not read one row at a time.
+   */
+  ids?: string[];
   states?: string[];
   scope?: string;
   messageClass?: string;
@@ -419,6 +425,8 @@ export interface RequestSearchOptions {
 
 export interface ClaimSearchOptions {
   q?: string;
+  /** See `RequestSearchOptions.ids`: exact-id lookup in one statement. */
+  ids?: string[];
   kinds?: string[];
   statuses?: string[];
   scope?: string;
@@ -638,6 +646,10 @@ export async function searchRequests(
   const dir = searchOrder(opts.order);
   const where: string[] = ['tenant = ?'];
   const args: unknown[] = [tenant];
+  if (opts.ids && opts.ids.length > 0) {
+    where.push(`id IN (${opts.ids.map(() => '?').join(',')})`);
+    args.push(...opts.ids);
+  }
   if (opts.q) {
     const like = `%${escapeLike(opts.q)}%`;
     where.push("(goal LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\')");
@@ -725,6 +737,10 @@ export async function searchClaims(
   const dir = searchOrder(opts.order);
   const where: string[] = ['tenant = ?'];
   const args: unknown[] = [tenant];
+  if (opts.ids && opts.ids.length > 0) {
+    where.push(`id IN (${opts.ids.map(() => '?').join(',')})`);
+    args.push(...opts.ids);
+  }
   if (opts.q) {
     const like = `%${escapeLike(opts.q)}%`;
     where.push("(subject LIKE ? ESCAPE '\\' OR statement LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\')");
