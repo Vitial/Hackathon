@@ -59,7 +59,8 @@ T('the plugin decides from the snapshot: allow reads, gate writes, deny shell', 
 });
 
 T('the plugin answers from the on-disk snapshot for its own session', async () => {
-  const { default: plugin } = await import('../src/dsh/vital-approval.mjs');
+  const mod = await import('../src/dsh/vital-approval.mjs');
+  const apply = (mod as unknown as { apply: (ctx: unknown) => void }).apply;
   const dir = mkdtempSync(join(tmpdir(), 'vital-policy-test-'));
   process.env.VITAL_POLICY_DIR = dir;
   try {
@@ -80,7 +81,7 @@ T('the plugin answers from the on-disk snapshot for its own session', async () =
         });
       },
     };
-    plugin.apply(ctx);
+    apply(ctx);
     eq(seen[0]!.verdict, 'allowed-once');
     eq(seen[1]!.verdict, 'rejected');
     // Unknown session: no snapshot -> delegate, downstream fails closed.
